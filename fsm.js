@@ -26,7 +26,11 @@ measureCtx.font = FONT;
 
 var view = { x: -400, y: -300, scale: 1 };   // world point shown at screen (0,0)
 
-var selectedObject = null;   // node or link being edited
+var ACCENT = '#1a56db';
+
+var selectedObject = null;   // node or link being edited (drives the caret)
+var selection = [];          // nodes highlighted for a group move
+var rubberBand = null;       // right-drag selection box, in world coordinates
 var currentLink = null;      // link being created by shift-drag
 var movingObject = false;
 var panning = false;
@@ -208,14 +212,22 @@ function tracePill(c, x, y, halfWidth, radius) {
   c.closePath();
 }
 
-Node.prototype.draw = function (c, selected) {
+Node.prototype.bounds = function () {
+  var reach = this.halfWidth + NODE_RADIUS;
+  return {
+    x0: this.x - reach, y0: this.y - NODE_RADIUS,
+    x1: this.x + reach, y1: this.y + NODE_RADIUS
+  };
+};
+
+Node.prototype.draw = function (c, caret) {
   tracePill(c, this.x, this.y, this.halfWidth, NODE_RADIUS);
   c.stroke();
   if (this.isAcceptState) {
     tracePill(c, this.x, this.y, this.halfWidth, NODE_RADIUS - ACCEPT_INSET);
     c.stroke();
   }
-  drawLabel(c, this.text, this.x, this.y, null, selected);
+  drawLabel(c, this.text, this.x, this.y, null, caret);
 };
 
 /* ------------------------------------------------------------------ *
@@ -557,14 +569,17 @@ function drawDiagram(c, options) {
 
   for (i = 0; i < nodes.length; i++) {
     var node = nodes[i];
-    var on = showSelection && node === selectedObject;
-    c.strokeStyle = c.fillStyle = on ? '#1a56db' : '#000000';
-    node.draw(c, on);
+    // Everything in the group is highlighted, but only the one being edited
+    // gets a caret.
+    var on = showSelection &&
+      (node === selectedObject || selection.indexOf(node) >= 0);
+    c.strokeStyle = c.fillStyle = on ? ACCENT : '#000000';
+    node.draw(c, showSelection && node === selectedObject);
   }
   for (i = 0; i < links.length; i++) {
     var link = links[i];
     var lon = showSelection && link === selectedObject;
-    c.strokeStyle = c.fillStyle = lon ? '#1a56db' : '#000000';
+    c.strokeStyle = c.fillStyle = lon ? ACCENT : '#000000';
     link.draw(c, lon);
   }
   if (currentLink) {
@@ -599,7 +614,46 @@ function draw() {
   drawGrid();
   ctx.lineJoin = 'round';
   drawDiagram(ctx, { showSelection: true });
+  drawRubberBand();
   ctx.restore();
+}
+
+function rubberBandRect() {
+  return {
+    x: Math.min(rubberBand.x0, rubberBand.x1),
+    y: Math.min(rubberBand.y0, rubberBand.y1),
+    width: Math.abs(rubberBand.x1 - rubberBand.x0),
+    height: Math.abs(rubberBand.y1 - rubberBand.y0)
+  };
+}
+
+function drawRubberBand() {
+  if (!rubberBand) return;
+  var r = rubberBandRect();
+  ctx.save();
+  ctx.strokeStyle = ACCENT;
+  ctx.fillStyle = 'rgba(26, 86, 219, 0.08)';
+  ctx.lineWidth = 1 / view.scale;
+  ctx.setLineDash([4 / view.scale, 3 / view.scale]);
+  ctx.fillRect(r.x, r.y, r.width, r.height);
+  ctx.strokeRect(r.x, r.y, r.width, r.height);
+  ctx.restore();
+}
+
+// Anything the box touches is picked up, which reads as more responsive than
+// requiring a state to be fully enclosed.
+function applyRubberBand() {
+  var r = rubberBandRect();
+  var picked = rubberBand.add ? selection.slice() : [];
+  for (var i = 0; i < nodes.length; i++) {
+    var b = nodes[i].bounds();
+    var hit = b.x0 <= r.x + r.width && b.x1 >= r.x &&
+              b.y0 <= r.y + r.height && b.y1 >= r.y;
+    if (hit && picked.indexOf(nodes[i]) < 0) picked.push(nodes[i]);
+  }
+  selection = picked;
+  // A single pick doubles as an edit target so you can just start typing.
+  selectedObject = selection.length === 1 ? selection[0] : null;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1061,6 +1115,15 @@ function onMouseDown(e) {
     e.preventDefault();
     return;
   }
+  if (e.button === 2) {
+    var start = toWorld(e);
+    rubberBand = { x0: start.x, y0: start.y, x1: start.x, y1: start.y,
+                   add: e.shiftKey };
+    if (!e.shiftKey) { selection = []; selectedObject = null; }
+    draw();
+    e.preventDefault();
+    return;
+  }
   if (e.button !== 0) return;
 
   var p = toWorld(e);
@@ -1074,11 +1137,23 @@ function onMouseDown(e) {
       currentLink = new SelfLink(selectedObject, p);
     } else {
       movingObject = true;
-      if (selectedObject.setMouseStart) selectedObject.setMouseStart(p.x, p.y);
+      // Grabbing a state outside the current group replaces it; grabbing one
+      // inside keeps the group so the whole thing moves together.
+      if (selectedObject instanceof Node) {
+        if (selection.indexOf(selectedObject) < 0) selection = [selectedObject];
+        for (var i = 0; i < selection.length; i++) {
+          selection[i].setMouseStart(p.x, p.y);
+        }
+      } else {
+        selection = [];
+        if (selectedObject.setMouseStart) selectedObject.setMouseStart(p.x, p.y);
+      }
     }
   } else if (shiftPressed) {
+    selection = [];
     currentLink = new TemporaryLink(p, p);
   } else {
+    selection = [];
     startPan(e);
   }
 
@@ -1094,6 +1169,13 @@ function startPan(e) {
 }
 
 function onMouseMove(e) {
+  if (rubberBand) {
+    var r = toWorld(e);
+    rubberBand.x1 = r.x;
+    rubberBand.y1 = r.y;
+    draw();
+    return;
+  }
   if (panning) {
     view.x = panStart.viewX - (e.clientX - panStart.x) / view.scale;
     view.y = panStart.viewY - (e.clientY - panStart.y) / view.scale;
@@ -1126,8 +1208,16 @@ function onMouseMove(e) {
   }
 
   if (movingObject && selectedObject) {
-    selectedObject.setAnchorPoint(p.x, p.y);
-    if (selectedObject instanceof Node) snapNode(selectedObject);
+    if (selectedObject instanceof Node && selection.length) {
+      for (var i = 0; i < selection.length; i++) {
+        selection[i].setAnchorPoint(p.x, p.y);
+      }
+      // Alignment snapping only makes sense for a lone state; across a group
+      // it would drag members out of formation.
+      if (selection.length === 1) snapNode(selection[0]);
+    } else {
+      selectedObject.setAnchorPoint(p.x, p.y);
+    }
     draw();
     return;
   }
@@ -1136,6 +1226,13 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
+  if (rubberBand) {
+    applyRubberBand();
+    rubberBand = null;
+    resetCaret();
+    draw();
+    return;
+  }
   if (panning) {
     panning = false;
     canvas.style.cursor = 'grab';
@@ -1208,6 +1305,7 @@ function onKeyDown(e) {
     e.preventDefault();
   } else if (e.key === 'Escape') {
     selectedObject = null;
+    selection = [];
     draw();
   } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
     setScale(view.scale * 1.2);
@@ -1226,19 +1324,25 @@ function onKeyDown(e) {
 }
 
 function deleteSelected() {
-  if (!selectedObject) return;
+  var doomed = selection.slice();
+  if (selectedObject && doomed.indexOf(selectedObject) < 0) {
+    doomed.push(selectedObject);
+  }
+  if (!doomed.length) return;
+
+  var gone = function (o) { return o && doomed.indexOf(o) >= 0; };
   var i;
   for (i = nodes.length - 1; i >= 0; i--) {
-    if (nodes[i] === selectedObject) nodes.splice(i, 1);
+    if (gone(nodes[i])) nodes.splice(i, 1);
   }
   for (i = links.length - 1; i >= 0; i--) {
     var l = links[i];
-    if (l === selectedObject || l.node === selectedObject ||
-        l.nodeA === selectedObject || l.nodeB === selectedObject) {
+    if (gone(l) || gone(l.node) || gone(l.nodeA) || gone(l.nodeB)) {
       links.splice(i, 1);
     }
   }
   selectedObject = null;
+  selection = [];
   saveState();
   draw();
 }
@@ -1264,6 +1368,8 @@ function clearAll() {
   nodes = [];
   links = [];
   selectedObject = null;
+  selection = [];
+  rubberBand = null;
   currentLink = null;
   saveState();
   draw();

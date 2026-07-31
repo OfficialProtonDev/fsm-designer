@@ -27,6 +27,8 @@ things the original didn't do.
 | Add a state | double-click on the canvas |
 | Add an arrow | shift-drag on the canvas |
 | Move something | drag it around |
+| Select several states | right-drag a box around them (<kbd>Shift</kbd> to add) |
+| Move a selection | drag any highlighted state |
 | Delete something | click it, press <kbd>Delete</kbd> |
 | Make accept state | double-click an existing state |
 | Rename | click a state or arrow and type |
