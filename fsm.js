@@ -15,6 +15,9 @@ var SNAP_PADDING = 8;          // alignment snapping while dragging
 var ARROW_SIZE = 8;
 var FONT_SIZE = 20;
 var FONT = FONT_SIZE + 'px "Times New Roman", serif';
+var SUB_FONT_SIZE = Math.round(FONT_SIZE * 0.7);
+var SUB_FONT = SUB_FONT_SIZE + 'px "Times New Roman", serif';
+var SUB_DROP = FONT_SIZE * 0.22;   // how far a subscript sits below the baseline
 var STORAGE_KEY = 'fsm-designer-v1';
 
 var nodes = [];
@@ -101,16 +104,69 @@ var GREEK = {
   upsilon: 'υ', phi: 'φ', chi: 'χ', psi: 'ψ', omega: 'ω'
 };
 
-var SUBSCRIPTS = '₀₁₂₃₄₅₆₇₈₉';
-
-// Raw label text -> what the user actually sees.
-function renderText(text) {
+function greekify(text) {
   var out = text;
   for (var name in GREEK) {
     out = out.split('\\' + name).join(GREEK[name]);
   }
-  out = out.replace(/_(\d)/g, function (_, d) { return SUBSCRIPTS[+d]; });
   return out;
+}
+
+/*
+ * Splits a raw label into upright and subscript runs.
+ *
+ * Subscripts are drawn smaller and lowered rather than swapped for Unicode
+ * subscript characters, because Unicode only defines those for the digits and
+ * a scattering of lowercase letters -- there is no subscript b, c, d, q, y, z
+ * or any capital at all. Drawing them means any character can be a subscript.
+ *
+ * `S_0` takes the next single character; `q_{start}` takes a braced run.
+ */
+function parseLabel(raw) {
+  var text = greekify(raw);
+  var segments = [];
+  var buffer = '';
+  var flush = function () {
+    if (buffer) { segments.push({ text: buffer, sub: false }); buffer = ''; }
+  };
+
+  for (var i = 0; i < text.length; i++) {
+    if (text.charAt(i) !== '_' || i + 1 >= text.length) { buffer += text.charAt(i); continue; }
+
+    var sub;
+    if (text.charAt(i + 1) === '{') {
+      var end = text.indexOf('}', i + 2);
+      if (end < 0) { buffer += text.charAt(i); continue; }   // unclosed: literal
+      sub = text.slice(i + 2, end);
+      i = end;
+    } else {
+      sub = text.charAt(i + 1);
+      i++;
+    }
+    if (!sub) continue;
+    flush();
+    // Merge with a preceding subscript so S_i_j reads as one run.
+    var prev = segments[segments.length - 1];
+    if (prev && prev.sub) prev.text += sub;
+    else segments.push({ text: sub, sub: true });
+  }
+  flush();
+  return segments;
+}
+
+function segmentFont(segment) {
+  return segment.sub ? SUB_FONT : FONT;
+}
+
+function segmentWidth(segment) {
+  measureCtx.font = segmentFont(segment);
+  return measureCtx.measureText(segment.text).width;
+}
+
+function segmentsWidth(segments) {
+  var total = 0;
+  for (var i = 0; i < segments.length; i++) total += segmentWidth(segments[i]);
+  return total;
 }
 
 var LATEX_ESCAPES = {
@@ -119,32 +175,42 @@ var LATEX_ESCAPES = {
   '^': '\\textasciicircum{}', '\\': '\\textbackslash{}'
 };
 
+// The same characters again, using the spellings that are valid inside math
+// mode -- subscripts are emitted as $_{...}$, so their contents are already
+// in math and the \text... forms above would not compile there.
+var LATEX_MATH_ESCAPES = {
+  '#': '\\#', '$': '\\$', '%': '\\%', '&': '\\&', '_': '\\_',
+  '{': '\\{', '}': '\\}', '~': '\\sim ',
+  '^': '\\wedge ', '\\': '\\backslash '
+};
+
 /*
- * The inverse, for LaTeX export. The label is emitted in text mode, with only
- * the subscripts and greek letters wrapped in math mode: text mode keeps the
- * upright roman the canvas draws (math mode would italicise a name like
- * WaitingForInput and space it as a product of variables), and it lets stray
- * characters like % or & be escaped the ordinary way.
+ * For LaTeX export. Text is emitted in text mode, with only greek letters
+ * wrapped in math mode: text mode keeps the upright roman the canvas draws
+ * (math mode would italicise a name like WaitingForInput and space it as a
+ * product of variables), and it lets stray characters like % or & be escaped
+ * the ordinary way.
  */
-function textToLatex(text) {
+function textToLatex(text, inMath) {
+  var escapes = inMath ? LATEX_MATH_ESCAPES : LATEX_ESCAPES;
   var out = '';
   for (var i = 0; i < text.length; i++) {
     var ch = text.charAt(i);
-    var sub = SUBSCRIPTS.indexOf(ch);
-    if (sub >= 0) { out += '$_{' + sub + '}$'; continue; }
     var found = null;
     for (var name in GREEK) {
       if (GREEK[name] === ch) { found = name; break; }
     }
-    if (found) { out += '$\\' + found + '$'; continue; }
-    out += LATEX_ESCAPES.hasOwnProperty(ch) ? LATEX_ESCAPES[ch] : ch;
+    if (found) {
+      out += inMath ? '\\' + found + ' ' : '$\\' + found + '$';
+      continue;
+    }
+    out += escapes.hasOwnProperty(ch) ? escapes[ch] : ch;
   }
   return out;
 }
 
 function measureLabel(text) {
-  measureCtx.font = FONT;
-  return measureCtx.measureText(renderText(text)).width;
+  return segmentsWidth(parseLabel(text));
 }
 
 /* ------------------------------------------------------------------ *
@@ -531,10 +597,27 @@ function drawArrow(c, x, y, angle) {
  * Draws a label centred on (x, y). When `angle` is given the label is
  * nudged along that direction far enough to clear the line it belongs to.
  */
+/*
+ * Places a label's runs. Renderers that want the label whole -- TikZ, which
+ * has real subscripts of its own -- implement drawSegments; a plain canvas
+ * context falls through to positioning each run here.
+ */
+function drawSegments(c, segments, centreX, y, width) {
+  if (c.drawSegments) { c.drawSegments(segments, centreX, y, width); return; }
+  c.textAlign = 'left';
+  c.textBaseline = 'middle';
+  var cursor = centreX - width / 2;
+  for (var i = 0; i < segments.length; i++) {
+    var seg = segments[i];
+    c.font = segmentFont(seg);
+    c.fillText(seg.text, cursor, y + (seg.sub ? SUB_DROP : 0));
+    cursor += segmentWidth(seg);
+  }
+}
+
 function drawLabel(c, rawText, x, y, angle, selected) {
-  var text = renderText(rawText);
-  c.font = FONT;
-  var width = measureLabel(rawText);
+  var segments = parseLabel(rawText);
+  var width = segmentsWidth(segments);
 
   if (angle != null) {
     var nx = Math.cos(angle), ny = Math.sin(angle);
@@ -545,9 +628,7 @@ function drawLabel(c, rawText, x, y, angle, selected) {
 
   x = Math.round(x);
   y = Math.round(y);
-  c.textAlign = 'center';
-  c.textBaseline = 'middle';
-  if (text) c.fillText(text, x, y);
+  if (segments.length) drawSegments(c, segments, x, y, width);
 
   if (selected && caretVisible && !c.isExporter) {
     var cx = x + width / 2 + 1;
@@ -880,12 +961,10 @@ BoundsRenderer.prototype.arc = function (x, y, r, a0, a1, ccw) {
 };
 BoundsRenderer.prototype.stroke = function () {};
 BoundsRenderer.prototype.fill = function () {};
-BoundsRenderer.prototype.fillText = function (t, x, y) {
-  var w = measureCtx.measureText(t).width;
-  this.add(x - w / 2, y - FONT_SIZE / 2);
-  this.add(x + w / 2, y + FONT_SIZE / 2);
+BoundsRenderer.prototype.drawSegments = function (segments, x, y, width) {
+  this.add(x - width / 2, y - FONT_SIZE / 2);
+  this.add(x + width / 2, y + FONT_SIZE / 2 + SUB_DROP);
 };
-BoundsRenderer.prototype.measureText = function (t) { return measureCtx.measureText(t); };
 BoundsRenderer.prototype.result = function (padding) {
   if (this.minX === Infinity) return { x: 0, y: 0, width: 100, height: 100 };
   return {
@@ -936,15 +1015,23 @@ SvgRenderer.prototype.fill = function () {
   this.parts.push('<path d="' + this.path.join(' ') + '" fill="' +
     this.fillStyle + '" stroke="none"/>');
 };
-SvgRenderer.prototype.fillText = function (text, x, y) {
-  if (!text) return;
-  this.parts.push('<text x="' + num(x) + '" y="' + num(y) +
-    '" font-family="Times New Roman, serif" font-size="' + FONT_SIZE +
-    '" fill="' + this.fillStyle +
-    '" text-anchor="middle" dominant-baseline="central">' +
-    escapeXml(text) + '</text>');
+// Each run is its own <text> at a position already computed from the canvas
+// metrics, which sidesteps tspan baseline-shift bookkeeping and keeps the SVG
+// pixel-identical to what the canvas draws.
+SvgRenderer.prototype.drawSegments = function (segments, x, y, width) {
+  var cursor = x - width / 2;
+  for (var i = 0; i < segments.length; i++) {
+    var seg = segments[i];
+    var size = seg.sub ? SUB_FONT_SIZE : FONT_SIZE;
+    this.parts.push('<text x="' + num(cursor) + '" y="' +
+      num(y + (seg.sub ? SUB_DROP : 0)) +
+      '" font-family="Times New Roman, serif" font-size="' + size +
+      '" fill="' + this.fillStyle +
+      '" text-anchor="start" dominant-baseline="central">' +
+      escapeXml(seg.text) + '</text>');
+    cursor += segmentWidth(seg);
+  }
 };
-SvgRenderer.prototype.measureText = function (t) { return measureCtx.measureText(t); };
 SvgRenderer.prototype.toSvg = function () {
   var b = this.bounds;
   return '<?xml version="1.0" encoding="UTF-8"?>\n' +
@@ -1002,11 +1089,17 @@ TikzRenderer.prototype.emit = function (cmd) {
 };
 TikzRenderer.prototype.stroke = function () { this.emit('\\draw[thick]'); };
 TikzRenderer.prototype.fill = function () { this.emit('\\fill'); };
-TikzRenderer.prototype.fillText = function (text, x, y) {
-  if (!text) return;
-  this.parts.push('\t\\node at ' + this.pt(x, y) + ' {' + textToLatex(text) + '};');
+// TikZ has real subscripts, so the label goes out as one node with $_{...}$
+// rather than as separately positioned runs.
+TikzRenderer.prototype.drawSegments = function (segments, x, y) {
+  var out = '';
+  for (var i = 0; i < segments.length; i++) {
+    var seg = segments[i];
+    out += seg.sub ? '$_{\\mathrm{' + textToLatex(seg.text, true) + '}}$'
+                   : textToLatex(seg.text, false);
+  }
+  if (out) this.parts.push('\t\\node at ' + this.pt(x, y) + ' {' + out + '};');
 };
-TikzRenderer.prototype.measureText = function (t) { return measureCtx.measureText(t); };
 /*
  * No `scale=` option on the tikzpicture: TikZ's scale transforms coordinates
  * and arc radii but deliberately leaves node text alone, so any scale other
@@ -1316,11 +1409,112 @@ function onKeyDown(e) {
   } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
     resetView();
     e.preventDefault();
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
+    copySelection();
+    e.preventDefault();
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
+    cutSelection();
+    e.preventDefault();
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+    pasteClipboard();
+    e.preventDefault();
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey &&
              e.key && e.key.length === 1 && selectedObject) {
     setSelectedText(selectedObject.text + e.key);
     e.preventDefault();
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Copy and paste
+ * ------------------------------------------------------------------ */
+
+var clipboard = null;    // plain data, not live objects
+var pasteCount = 0;      // so repeated pastes cascade instead of stacking
+var PASTE_OFFSET = 32;
+
+// Falls back to the single edit target so Ctrl+C works after a plain click.
+function selectedNodes() {
+  if (selection.length) return selection;
+  return selectedObject instanceof Node ? [selectedObject] : [];
+}
+
+/*
+ * A link is only worth copying when both of its ends come along; a transition
+ * to a state that was left behind has nowhere to land in the pasted copy.
+ */
+function copySelection() {
+  var picked = selectedNodes();
+  if (!picked.length) return false;
+
+  var data = { nodes: [], links: [] };
+  for (var i = 0; i < picked.length; i++) {
+    data.nodes.push({
+      x: picked[i].x, y: picked[i].y,
+      text: picked[i].text, isAcceptState: picked[i].isAcceptState
+    });
+  }
+  for (var j = 0; j < links.length; j++) {
+    var l = links[j];
+    var a = picked.indexOf(l.nodeA), b = picked.indexOf(l.nodeB);
+    var n = picked.indexOf(l.node);
+    if (l instanceof Link && a >= 0 && b >= 0) {
+      data.links.push({ type: 'Link', nodeA: a, nodeB: b, text: l.text,
+        parallelPart: l.parallelPart, perpendicularPart: l.perpendicularPart });
+    } else if (l instanceof SelfLink && n >= 0) {
+      data.links.push({ type: 'SelfLink', node: n, text: l.text,
+        anchorAngle: l.anchorAngle });
+    } else if (l instanceof StartLink && n >= 0) {
+      data.links.push({ type: 'StartLink', node: n, text: l.text,
+        deltaX: l.deltaX, deltaY: l.deltaY });
+    }
+  }
+  clipboard = data;
+  pasteCount = 0;
+  return true;
+}
+
+function pasteClipboard() {
+  if (!clipboard || !clipboard.nodes.length) return;
+  pasteCount++;
+  var shift = PASTE_OFFSET * pasteCount;
+  var created = [], i;
+
+  for (i = 0; i < clipboard.nodes.length; i++) {
+    var d = clipboard.nodes[i];
+    var node = new Node(d.x + shift, d.y + shift);
+    node.text = d.text;
+    node.isAcceptState = d.isAcceptState;
+    node.updateSize();
+    nodes.push(node);
+    created.push(node);
+  }
+  for (i = 0; i < clipboard.links.length; i++) {
+    var e = clipboard.links[i], link = null;
+    if (e.type === 'Link') {
+      link = new Link(created[e.nodeA], created[e.nodeB]);
+      link.parallelPart = e.parallelPart;
+      link.perpendicularPart = e.perpendicularPart;
+    } else if (e.type === 'SelfLink') {
+      link = new SelfLink(created[e.node]);
+      link.anchorAngle = e.anchorAngle;
+    } else if (e.type === 'StartLink') {
+      link = new StartLink(created[e.node]);
+      link.deltaX = e.deltaX;
+      link.deltaY = e.deltaY;
+    }
+    if (link) { link.text = e.text; links.push(link); }
+  }
+
+  selection = created;
+  selectedObject = created.length === 1 ? created[0] : null;
+  resetCaret();
+  saveState();
+  draw();
+}
+
+function cutSelection() {
+  if (copySelection()) deleteSelected();
 }
 
 function deleteSelected() {

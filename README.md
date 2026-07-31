@@ -29,13 +29,21 @@ things the original didn't do.
 | Move something | drag it around |
 | Select several states | right-drag a box around them (<kbd>Shift</kbd> to add) |
 | Move a selection | drag any highlighted state |
+| Copy / cut / paste | <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> |
 | Delete something | click it, press <kbd>Delete</kbd> |
 | Make accept state | double-click an existing state |
 | Rename | click a state or arrow and type |
 | Pan | drag empty canvas, or alt-drag / middle-drag |
 | Zoom | scroll wheel, toolbar buttons, or <kbd>Ctrl</kbd>+<kbd>+</kbd>/<kbd>-</kbd> |
 
-Type `S_0` for a numeric subscript and `\beta` for a greek letter.
+Type `\beta` for a greek letter, and an underscore for a subscript: `S_0` or
+`q_a` take the next character, `q_{start}` takes a braced run. Subscripts are
+drawn rather than swapped for Unicode subscript glyphs, so any character works
+— Unicode has no subscript `b`, `d`, `q`, `y`, `z` or capitals at all.
+
+Copying takes the selected states, and any transition whose *both* ends are in
+the selection. Repeated pastes cascade rather than stacking on one spot. The
+clipboard lives in the page, so it doesn't carry between browser tabs.
 
 Diagrams are saved to `localStorage` automatically, and export to PNG, SVG, or
 LaTeX (TikZ).
