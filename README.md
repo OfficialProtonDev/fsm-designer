@@ -43,6 +43,11 @@ Type `\beta` for a greek letter, and an underscore for a subscript: `S_0` or
 drawn rather than swapped for Unicode subscript glyphs, so any character works
 — Unicode has no subscript `b`, `d`, `q`, `y`, `z` or capitals at all.
 
+There are two clipboards — states and label text — and one <kbd>Ctrl</kbd>+<kbd>V</kbd>,
+so whichever you copied last is what a paste means. Pasting text into an object
+selected by its line, rather than by clicking its text, appends at the end of
+the label.
+
 Copying takes the selected states, and any transition whose *both* ends are in
 the selection. Repeated pastes cascade rather than stacking on one spot. The
 clipboard lives in the page, so it doesn't carry between browser tabs.

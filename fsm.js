@@ -1664,14 +1664,48 @@ function onKeyDown(e) {
     resetView();
     e.preventDefault();
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
-    // Highlighted label text wins; otherwise this copies the selected states.
-    // Left un-prevented when there is text, so the copy event can put it on
-    // the system clipboard.
-    if (!hasTextRange()) { copySelection(); e.preventDefault(); }
+    /*
+     * Highlighted label text wins; otherwise this copies the selected states.
+     * The text is banked here rather than waiting on the copy event, which
+     * only mirrors it onto the system clipboard and does not always fire.
+     */
+    if (hasTextRange()) {
+      textClipboard = selectedText();
+      lastCopyKind = 'text';
+    } else {
+      copySelection();
+      e.preventDefault();
+    }
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
-    if (!hasTextRange()) { cutSelection(); e.preventDefault(); }
+    if (hasTextRange()) {
+      textClipboard = selectedText();
+      lastCopyKind = 'text';
+      // The cut event removes the text if it fires; this catches the case
+      // where it does not, so Ctrl+X is never a copy that forgot to cut.
+      pendingCut = true;
+      setTimeout(function () {
+        if (!pendingCut) return;
+        pendingCut = false;
+        if (hasTextRange()) deleteTextRange();
+      }, 0);
+    } else {
+      cutSelection();
+      e.preventDefault();
+    }
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
-    if (!editingLabel) { pasteClipboard(); e.preventDefault(); }
+    if (wantsTextPaste()) {
+      // Prefer the paste event, which carries whatever is really on the
+      // system clipboard; fall back to our own copy when it never arrives.
+      pendingTextPaste = true;
+      setTimeout(function () {
+        if (!pendingTextPaste) return;
+        pendingTextPaste = false;
+        insertTextPaste(textClipboard);
+      }, 0);
+    } else {
+      pasteClipboard();
+      e.preventDefault();
+    }
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey &&
              e.key && e.key.length === 1 && selectedObject) {
     if (textEditing) insertAtCaret(e.key);
@@ -1688,6 +1722,7 @@ function onCopyEvent(e) {
   if (modalOpen() || !hasTextRange()) return;
   var text = selectedText();
   textClipboard = text;
+  lastCopyKind = 'text';
   if (e.clipboardData) {
     e.clipboardData.setData('text/plain', text);
     e.preventDefault();
@@ -1697,16 +1732,18 @@ function onCopyEvent(e) {
 function onCutEvent(e) {
   if (modalOpen() || !hasTextRange()) return;
   onCopyEvent(e);
+  pendingCut = false;
   deleteTextRange();
 }
 
 function onPasteEvent(e) {
-  if (modalOpen() || !textEditing || !selectedObject) return;
+  if (modalOpen() || !wantsTextPaste()) return;
+  pendingTextPaste = false;
   var text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
   if (!text) text = textClipboard;
   if (!text) return;
   e.preventDefault();
-  insertAtCaret(text.replace(/[\r\n\t]+/g, ' '));
+  insertTextPaste(text);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1824,6 +1861,27 @@ var clipboard = null;    // plain data, not live objects
 var pasteCount = 0;      // so repeated pastes cascade instead of stacking
 var PASTE_OFFSET = 32;
 
+/*
+ * There are two clipboards -- states and label text -- and one Ctrl+V, so
+ * something has to decide which one a paste means. Whichever was copied last
+ * wins: having just copied a label, pasting into a label is what you meant.
+ */
+var lastCopyKind = null;   // 'nodes' | 'text'
+var pendingTextPaste = false;
+var pendingCut = false;
+
+function wantsTextPaste() {
+  return !!(selectedObject && lastCopyKind === 'text' && textClipboard);
+}
+
+// Pasting into an object selected by its line, rather than by clicking its
+// text, drops the text in at the caret's resting place: the end of the label.
+function insertTextPaste(text) {
+  if (!selectedObject) return;
+  textEditing = true;
+  insertAtCaret(text.replace(/[\r\n\t]+/g, ' '));
+}
+
 // Falls back to the single edit target so Ctrl+C works after a plain click.
 function selectedNodes() {
   if (selection.length) return selection;
@@ -1862,6 +1920,7 @@ function copySelection() {
   }
   clipboard = data;
   pasteCount = 0;
+  lastCopyKind = 'nodes';
   return true;
 }
 
