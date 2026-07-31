@@ -117,6 +117,9 @@ footer {
   font-size: 13px;
 }
 
+footer p { margin: 0 0 6px; }
+footer a { color: var(--accent); }
+
 #modal {
   position: fixed;
   inset: 0;

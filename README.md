@@ -1,8 +1,14 @@
 # Finite State Machine Designer
 
-A browser-based editor for drawing finite state machines on an HTML5 canvas,
-inspired by the classic FSM designer by Evan Wallace. This is an independent
-rewrite with a few things the original didn't do.
+A browser-based editor for drawing finite state machines on an HTML5 canvas.
+
+## Credit
+
+This owes its concept and interaction design to the
+[Finite State Machine Designer](https://madebyevan.com/fsm/) created by
+[Evan Wallace](https://madebyevan.com/) in 2010. This is an independent rewrite
+rather than a fork — none of the original code is used — and it adds a few
+things the original didn't do.
 
 ## What's different
 

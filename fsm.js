@@ -109,18 +109,31 @@ function renderText(text) {
   return out;
 }
 
-// The inverse, for LaTeX export.
+var LATEX_ESCAPES = {
+  '#': '\\#', '$': '\\$', '%': '\\%', '&': '\\&', '_': '\\_',
+  '{': '\\{', '}': '\\}', '~': '\\textasciitilde{}',
+  '^': '\\textasciicircum{}', '\\': '\\textbackslash{}'
+};
+
+/*
+ * The inverse, for LaTeX export. The label is emitted in text mode, with only
+ * the subscripts and greek letters wrapped in math mode: text mode keeps the
+ * upright roman the canvas draws (math mode would italicise a name like
+ * WaitingForInput and space it as a product of variables), and it lets stray
+ * characters like % or & be escaped the ordinary way.
+ */
 function textToLatex(text) {
   var out = '';
   for (var i = 0; i < text.length; i++) {
     var ch = text.charAt(i);
     var sub = SUBSCRIPTS.indexOf(ch);
-    if (sub >= 0) { out += '_' + sub; continue; }
+    if (sub >= 0) { out += '$_{' + sub + '}$'; continue; }
     var found = null;
     for (var name in GREEK) {
       if (GREEK[name] === ch) { found = name; break; }
     }
-    out += found ? '\\' + found + ' ' : ch;
+    if (found) { out += '$\\' + found + '$'; continue; }
+    out += LATEX_ESCAPES.hasOwnProperty(ch) ? LATEX_ESCAPES[ch] : ch;
   }
   return out;
 }
@@ -937,18 +950,30 @@ TikzRenderer.prototype.stroke = function () { this.emit('\\draw[thick]'); };
 TikzRenderer.prototype.fill = function () { this.emit('\\fill'); };
 TikzRenderer.prototype.fillText = function (text, x, y) {
   if (!text) return;
-  this.parts.push('\t\\node at ' + this.pt(x, y) + ' {$' + textToLatex(text) + '$};');
+  this.parts.push('\t\\node at ' + this.pt(x, y) + ' {' + textToLatex(text) + '};');
 };
 TikzRenderer.prototype.measureText = function (t) { return measureCtx.measureText(t); };
+/*
+ * No `scale=` option on the tikzpicture: TikZ's scale transforms coordinates
+ * and arc radii but deliberately leaves node text alone, so any scale other
+ * than 1 shrinks the states out from under their labels. Proportions are set
+ * instead by `this.scale` px-per-cm, chosen so the 20px canvas font lands near
+ * the 12pt body font.
+ */
 TikzRenderer.prototype.toLatex = function () {
   return '\\documentclass[12pt]{article}\n' +
-    '\\usepackage{tikz}\n\n' +
+    '\\usepackage{tikz}\n' +
+    '\\usepackage{graphicx}\n\n' +
     '\\begin{document}\n\n' +
     '\\begin{center}\n' +
-    '\\begin{tikzpicture}[scale=0.2]\n' +
-    '\\tikzstyle{every node}+=[inner sep=0pt]\n' +
+    '% Shrink to the text width only if the diagram is wider than the page.\n' +
+    '% \\resizebox scales the labels along with the shapes, so proportions hold.\n' +
+    '\\resizebox{\\ifdim\\width>\\linewidth\\linewidth\\else\\width\\fi}{!}{%\n' +
+    '\\begin{tikzpicture}\n' +
+    '\\tikzset{every node/.append style={inner sep=0pt}}\n' +
     this.parts.join('\n') + '\n' +
-    '\\end{tikzpicture}\n' +
+    '\\end{tikzpicture}%\n' +
+    '}\n' +
     '\\end{center}\n\n' +
     '\\end{document}\n';
 };
