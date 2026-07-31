@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finite State Machine Designer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Finite State Machine Designer</h1>
+
+<div id="canvas-wrap">
+  <canvas id="canvas">
+    Your browser does not support the HTML5 <code>&lt;canvas&gt;</code> element.
+  </canvas>
+</div>
+
+<div id="toolbar">
+  <button type="button" id="clear-all" class="danger">Clear All</button>
+
+  <span class="group">
+    <button type="button" id="zoom-out" title="Zoom out">&minus;</button>
+    <span id="zoom-level">100%</span>
+    <button type="button" id="zoom-in" title="Zoom in">+</button>
+    <button type="button" id="zoom-fit">Fit</button>
+    <button type="button" id="zoom-reset">Reset view</button>
+  </span>
+
+  <span class="spacer"></span>
+
+  <span class="label">Export as:</span>
+  <button type="button" id="export-png">PNG</button>
+  <button type="button" id="export-svg">SVG</button>
+  <button type="button" id="export-latex">LaTeX</button>
+</div>
+
+<div id="help">
+  <p><b>How to use</b></p>
+  <ul>
+    <li><b>Add a state:</b> double-click on the canvas</li>
+    <li><b>Add an arrow:</b> shift-drag on the canvas</li>
+    <li><b>Move something:</b> drag it around</li>
+    <li><b>Delete something:</b> click it and press the delete key</li>
+    <li><b>Make accept state:</b> double-click on an existing state</li>
+    <li><b>Rename:</b> click a state or arrow and start typing</li>
+    <li><b>Numeric subscript:</b> put an underscore before the number (like <code>S_0</code>)</li>
+    <li><b>Greek letter:</b> put a backslash before it (like <code>\beta</code>)</li>
+    <li><b>Pan:</b> drag an empty part of the canvas (or alt-drag / middle-drag anywhere)</li>
+    <li><b>Zoom:</b> scroll wheel, the <code>+</code> / <code>&minus;</code> buttons, or <code>Ctrl</code>+<code>+</code> / <code>Ctrl</code>+<code>&minus;</code></li>
+  </ul>
+  <p class="note">The canvas is unbounded &mdash; pan and zoom to build diagrams of any size. States automatically stretch into a pill shape so long names fit inside them.</p>
+</div>
+
+<footer>
+  A rebuild of the classic HTML5 canvas FSM designer, with auto-sizing pill-shaped states.
+</footer>
+
+<div id="modal" class="hidden">
+  <div class="modal-box">
+    <h2 id="modal-title">LaTeX</h2>
+    <textarea id="modal-text" readonly spellcheck="false"></textarea>
+    <div class="modal-buttons">
+      <button type="button" id="modal-copy">Copy to clipboard</button>
+      <button type="button" id="modal-download">Download .tex</button>
+      <button type="button" id="modal-close">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="fsm.js"></script>
+</body>
+</html>
