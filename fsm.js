@@ -42,6 +42,12 @@ var originalClick = null;
 var caretVisible = true;
 var shiftPressed = false;
 
+var caretIndex = 0;        // caret position, counted in glyphs
+var selectAnchor = null;   // other end of a highlighted run, or null
+var textEditing = false;   // true once the caret has been placed in a label
+var textDragging = false;  // dragging out a highlight inside a label
+var textClipboard = '';
+
 /* ------------------------------------------------------------------ *
  * Small math helpers
  * ------------------------------------------------------------------ */
@@ -112,61 +118,155 @@ function greekify(text) {
   return out;
 }
 
+// Longest first, so \omicron is not mistaken for \omi.
+var GREEK_NAMES = Object.keys(GREEK).sort(function (a, b) {
+  return b.length - a.length;
+});
+
+// Reads one visible glyph starting at `i`: either a \greek escape or a
+// single character.
+function readGlyph(raw, i) {
+  if (raw.charAt(i) === '\\') {
+    for (var k = 0; k < GREEK_NAMES.length; k++) {
+      var name = GREEK_NAMES[k];
+      if (raw.substr(i + 1, name.length) === name) {
+        return { display: GREEK[name], next: i + 1 + name.length };
+      }
+    }
+  }
+  return { display: raw.charAt(i), next: i + 1 };
+}
+
 /*
- * Splits a raw label into upright and subscript runs.
+ * Breaks a raw label into one unit per *visible* glyph, each remembering where
+ * it came from in the raw string. That mapping is what lets a click land the
+ * caret in the middle of a label: `\alpha` is six raw characters but one
+ * glyph, and the caret only ever sits between glyphs.
  *
  * Subscripts are drawn smaller and lowered rather than swapped for Unicode
  * subscript characters, because Unicode only defines those for the digits and
  * a scattering of lowercase letters -- there is no subscript b, c, d, q, y, z
  * or any capital at all. Drawing them means any character can be a subscript.
  *
- * `S_0` takes the next single character; `q_{start}` takes a braced run.
+ * `S_0` takes the next glyph; `q_{start}` takes a braced run.
+ *
+ * `insertAt` is where typed text goes to land before this glyph, which for a
+ * braced run means inside the braces. Units in a braced run also carry the
+ * span of the whole construct so deleting the last member takes the braces.
  */
-function parseLabel(raw) {
-  var text = greekify(raw);
-  var segments = [];
-  var buffer = '';
-  var flush = function () {
-    if (buffer) { segments.push({ text: buffer, sub: false }); buffer = ''; }
-  };
+function scanUnits(raw) {
+  var units = [];
+  var i = 0;
 
-  for (var i = 0; i < text.length; i++) {
-    if (text.charAt(i) !== '_' || i + 1 >= text.length) { buffer += text.charAt(i); continue; }
-
-    var sub;
-    if (text.charAt(i + 1) === '{') {
-      var end = text.indexOf('}', i + 2);
-      if (end < 0) { buffer += text.charAt(i); continue; }   // unclosed: literal
-      sub = text.slice(i + 2, end);
-      i = end;
-    } else {
-      sub = text.charAt(i + 1);
-      i++;
+  while (i < raw.length) {
+    if (raw.charAt(i) === '_' && i + 1 < raw.length) {
+      if (raw.charAt(i + 1) === '{') {
+        var end = raw.indexOf('}', i + 2);
+        if (end >= 0) {
+          var group = [];
+          var j = i + 2;
+          while (j < end) {
+            var inner = readGlyph(raw, j);
+            group.push({ display: inner.display, sub: true, insertAt: j,
+              delStart: j, delEnd: inner.next,
+              groupStart: i, groupEnd: end + 1, groupIndex: group.length });
+            j = inner.next;
+          }
+          for (var g = 0; g < group.length; g++) group[g].groupCount = group.length;
+          units = units.concat(group);
+          i = end + 1;
+          continue;
+        }
+        // unclosed brace: fall through and treat the underscore literally
+      } else {
+        var one = readGlyph(raw, i + 1);
+        units.push({ display: one.display, sub: true, insertAt: i,
+          delStart: i, delEnd: one.next });
+        i = one.next;
+        continue;
+      }
     }
-    if (!sub) continue;
-    flush();
-    // Merge with a preceding subscript so S_i_j reads as one run.
-    var prev = segments[segments.length - 1];
-    if (prev && prev.sub) prev.text += sub;
-    else segments.push({ text: sub, sub: true });
+    var plain = readGlyph(raw, i);
+    units.push({ display: plain.display, sub: false, insertAt: i,
+      delStart: i, delEnd: plain.next });
+    i = plain.next;
   }
-  flush();
-  return segments;
+  return units;
 }
 
-function segmentFont(segment) {
-  return segment.sub ? SUB_FONT : FONT;
+function glyphFont(sub) { return sub ? SUB_FONT : FONT; }
+
+function glyphWidth(display, sub) {
+  measureCtx.font = glyphFont(sub);
+  return measureCtx.measureText(display).width;
 }
+
+/*
+ * Positions every glyph and groups runs of like kind for drawing. Segment
+ * widths are summed from their glyphs rather than measured whole, so a
+ * caret drawn at a glyph boundary lands exactly where that glyph starts.
+ */
+function labelLayout(raw) {
+  var units = scanUnits(raw);
+  var segments = [];
+  var x = 0;
+
+  for (var i = 0; i < units.length; i++) {
+    var u = units[i];
+    u.width = glyphWidth(u.display, u.sub);
+    u.x = x;
+    x += u.width;
+
+    var last = segments[segments.length - 1];
+    if (last && last.sub === u.sub) {
+      last.text += u.display;
+      last.width += u.width;
+    } else {
+      segments.push({ text: u.display, sub: u.sub, x: u.x, width: u.width });
+    }
+  }
+  return { units: units, segments: segments, width: x };
+}
+
+function parseLabel(raw) { return labelLayout(raw).segments; }
+
+function segmentFont(segment) { return glyphFont(segment.sub); }
 
 function segmentWidth(segment) {
-  measureCtx.font = segmentFont(segment);
-  return measureCtx.measureText(segment.text).width;
+  return segment.width != null ? segment.width
+                               : glyphWidth(segment.text, segment.sub);
 }
 
 function segmentsWidth(segments) {
   var total = 0;
   for (var i = 0; i < segments.length; i++) total += segmentWidth(segments[i]);
   return total;
+}
+
+// Rebuilds raw source from a run of glyphs, re-encoding greek and subscripts.
+// Going through the glyphs rather than slicing the original string means the
+// result is always well formed, whatever bracing the user originally typed.
+function unitsToRaw(units, from, to) {
+  var out = '';
+  var i = from;
+  while (i < to) {
+    if (!units[i].sub) { out += encodeGlyph(units[i].display); i++; continue; }
+    var run = '';
+    while (i < to && units[i].sub) { run += encodeGlyph(units[i].display); i++; }
+    out += run.length === 1 ? '_' + run : '_{' + run + '}';
+  }
+  return out;
+}
+
+function encodeGlyph(display) {
+  for (var name in GREEK) {
+    if (GREEK[name] === display) return '\\' + name;
+  }
+  return display;
+}
+
+function rawWithout(units, from, to) {
+  return unitsToRaw(units, 0, from) + unitsToRaw(units, to, units.length);
 }
 
 var LATEX_ESCAPES = {
@@ -286,14 +386,19 @@ Node.prototype.bounds = function () {
   };
 };
 
-Node.prototype.draw = function (c, caret) {
+Node.prototype.draw = function (c, owner) {
   tracePill(c, this.x, this.y, this.halfWidth, NODE_RADIUS);
   c.stroke();
   if (this.isAcceptState) {
     tracePill(c, this.x, this.y, this.halfWidth, NODE_RADIUS - ACCEPT_INSET);
     c.stroke();
   }
-  drawLabel(c, this.text, this.x, this.y, null, caret);
+  drawLabel(c, this.text, this.x, this.y, null, owner);
+};
+
+// Where this object's label sits, for click hit-testing.
+Node.prototype.labelPlace = function () {
+  return labelPlacement(this.text, this.x, this.y, null);
 };
 
 /* ------------------------------------------------------------------ *
@@ -401,11 +506,11 @@ function drawLinkGeometry(c, g) {
   drawArrow(c, tip.x, tip.y, g.endAngle);
 }
 
-Link.prototype.draw = function (c, selected) {
+Link.prototype.draw = function (c, owner) {
   var g = this.geometry();
   if (!g) return;
   drawLinkGeometry(c, g);
-  drawLabel(c, this.text, g.textX, g.textY, g.textAngle, selected);
+  drawLabel(c, this.text, g.textX, g.textY, g.textAngle, owner);
 };
 
 Link.prototype.containsPoint = function (x, y) {
@@ -490,13 +595,13 @@ SelfLink.prototype.geometry = function () {
   };
 };
 
-SelfLink.prototype.draw = function (c, selected) {
+SelfLink.prototype.draw = function (c, owner) {
   var g = this.geometry();
   c.beginPath();
   c.arc(g.circle.x, g.circle.y, g.circle.radius, g.from, g.to, false);
   c.stroke();
   drawArrow(c, g.tip.x, g.tip.y, g.endAngle);
-  drawLabel(c, this.text, g.textX, g.textY, g.textAngle, selected);
+  drawLabel(c, this.text, g.textX, g.textY, g.textAngle, owner);
 };
 
 SelfLink.prototype.containsPoint = function (x, y) {
@@ -538,10 +643,10 @@ StartLink.prototype.geometry = function () {
   };
 };
 
-StartLink.prototype.draw = function (c, selected) {
+StartLink.prototype.draw = function (c, owner) {
   var g = this.geometry();
   drawLinkGeometry(c, g);
-  drawLabel(c, this.text, g.textX, g.textY, g.textAngle, selected);
+  drawLabel(c, this.text, g.textX, g.textY, g.textAngle, owner);
 };
 
 StartLink.prototype.containsPoint = function (x, y) {
@@ -569,6 +674,36 @@ TemporaryLink.prototype.draw = function (c) {
 /* ------------------------------------------------------------------ *
  * Shared drawing
  * ------------------------------------------------------------------ */
+
+// All three link kinds put their label at the anchor their geometry reports.
+function linkLabelPlace() {
+  var g = this.geometry();
+  return g ? labelPlacement(this.text, g.textX, g.textY, g.textAngle) : null;
+}
+Link.prototype.labelPlace = linkLabelPlace;
+SelfLink.prototype.labelPlace = linkLabelPlace;
+StartLink.prototype.labelPlace = linkLabelPlace;
+
+/*
+ * Finds a label under the pointer. Arrow labels sit off to the side of the
+ * line, so they are not otherwise clickable at all -- without this, the only
+ * way to reach an arrow's text was to select the line and backspace to it.
+ */
+function labelAt(x, y) {
+  var all = nodes.concat(links);
+  for (var i = all.length - 1; i >= 0; i--) {
+    var obj = all[i];
+    if (!obj.text || !obj.labelPlace) continue;
+    var place = obj.labelPlace();
+    if (!place) continue;
+    var halfW = place.layout.width / 2 + 3;
+    var halfH = FONT_SIZE / 2 + 4;
+    if (Math.abs(x - place.x) <= halfW && Math.abs(y - place.y) <= halfH) {
+      return { object: obj, place: place };
+    }
+  }
+  return null;
+}
 
 function pathHasPoint(g, x, y) {
   if (!g) return false;
@@ -615,26 +750,73 @@ function drawSegments(c, segments, centreX, y, width) {
   }
 }
 
-function drawLabel(c, rawText, x, y, angle, selected) {
-  var segments = parseLabel(rawText);
-  var width = segmentsWidth(segments);
+/*
+ * Where a label actually sits, given the anchor its owner hands over. Both
+ * drawing and click hit-testing go through this so the box the mouse tests
+ * against is exactly the box that was drawn.
+ */
+function labelPlacement(rawText, x, y, angle) {
+  var layout = labelLayout(rawText);
 
   if (angle != null) {
     var nx = Math.cos(angle), ny = Math.sin(angle);
-    var push = 6 + Math.abs(nx) * (width / 2) + Math.abs(ny) * (FONT_SIZE / 2);
+    var push = 6 + Math.abs(nx) * (layout.width / 2) + Math.abs(ny) * (FONT_SIZE / 2);
     x += nx * push;
     y += ny * push;
   }
+  return { x: Math.round(x), y: Math.round(y), layout: layout };
+}
 
-  x = Math.round(x);
-  y = Math.round(y);
-  if (segments.length) drawSegments(c, segments, x, y, width);
+// x of a caret sitting before glyph `index`.
+function caretX(place, index) {
+  var units = place.layout.units;
+  var left = place.x - place.layout.width / 2;
+  if (index >= units.length) return left + place.layout.width;
+  return left + units[index].x;
+}
 
-  if (selected && caretVisible && !c.isExporter) {
-    var cx = x + width / 2 + 1;
+// Nearest glyph boundary to a given x -- the caret never lands inside a glyph.
+function caretIndexAtX(place, px) {
+  var units = place.layout.units;
+  var best = 0, bestDist = Infinity;
+  for (var k = 0; k <= units.length; k++) {
+    var d = Math.abs(px - caretX(place, k));
+    if (d < bestDist) { bestDist = d; best = k; }
+  }
+  return best;
+}
+
+function drawLabel(c, rawText, x, y, angle, owner) {
+  var place = labelPlacement(rawText, x, y, angle);
+  var layout = place.layout;
+  var editing = owner && owner === selectedObject && !c.isExporter;
+
+  if (editing && hasTextRange()) {
+    var r = textRange();
+    var x0 = caretX(place, r.from), x1 = caretX(place, r.to);
+    var fill = c.fillStyle;
+    c.fillStyle = 'rgba(26, 86, 219, 0.22)';
+    c.fillRect(x0, place.y - FONT_SIZE / 2 - 2,
+               x1 - x0, FONT_SIZE + SUB_DROP + 4);
+    c.fillStyle = fill;
+  }
+
+  if (layout.segments.length) {
+    drawSegments(c, layout.segments, place.x, place.y, layout.width);
+  }
+
+  if (editing && textEditing && caretVisible) {
+    var cx = caretX(place, caretIndex);
     c.beginPath();
-    c.moveTo(cx, y - FONT_SIZE / 2);
-    c.lineTo(cx, y + FONT_SIZE / 2);
+    c.moveTo(cx, place.y - FONT_SIZE / 2);
+    c.lineTo(cx, place.y + FONT_SIZE / 2);
+    c.stroke();
+  } else if (editing && !textEditing && caretVisible) {
+    // Not yet clicked into: the caret rests after the last glyph, as before.
+    var ex = place.x + layout.width / 2 + 1;
+    c.beginPath();
+    c.moveTo(ex, place.y - FONT_SIZE / 2);
+    c.lineTo(ex, place.y + FONT_SIZE / 2);
     c.stroke();
   }
 }
@@ -655,13 +837,13 @@ function drawDiagram(c, options) {
     var on = showSelection &&
       (node === selectedObject || selection.indexOf(node) >= 0);
     c.strokeStyle = c.fillStyle = on ? ACCENT : '#000000';
-    node.draw(c, showSelection && node === selectedObject);
+    node.draw(c, showSelection ? node : null);
   }
   for (i = 0; i < links.length; i++) {
     var link = links[i];
     var lon = showSelection && link === selectedObject;
     c.strokeStyle = c.fillStyle = lon ? ACCENT : '#000000';
-    link.draw(c, lon);
+    link.draw(c, showSelection ? link : null);
   }
   if (currentLink) {
     c.strokeStyle = c.fillStyle = '#000000';
@@ -734,7 +916,7 @@ function applyRubberBand() {
   }
   selection = picked;
   // A single pick doubles as an edit target so you can just start typing.
-  selectedObject = selection.length === 1 ? selection[0] : null;
+  focusObject(selection.length === 1 ? selection[0] : null);
 }
 
 /* ------------------------------------------------------------------ *
@@ -1212,7 +1394,7 @@ function onMouseDown(e) {
     var start = toWorld(e);
     rubberBand = { x0: start.x, y0: start.y, x1: start.x, y1: start.y,
                    add: e.shiftKey };
-    if (!e.shiftKey) { selection = []; selectedObject = null; }
+    if (!e.shiftKey) { selection = []; focusObject(null); }
     draw();
     e.preventDefault();
     return;
@@ -1221,7 +1403,37 @@ function onMouseDown(e) {
 
   var p = toWorld(e);
   originalClick = p;
-  selectedObject = objectAt(p.x, p.y);
+
+  /*
+   * A click on a label puts the caret where it was clicked.
+   *
+   * An arrow's label sits clear of its line, so dragging out of one can only
+   * mean "highlight this text" -- there is nothing else there to grab. A
+   * state's label sits inside the state, where a drag still has to mean "move
+   * me", so a click there places the caret and then falls through to the
+   * normal move handling; highlighting a state's label is done from the
+   * keyboard with shift-arrows or Ctrl+A.
+   *
+   * Shift is left alone throughout: it already means "draw an arrow".
+   */
+  var label = shiftPressed ? null : labelAt(p.x, p.y);
+  var labelledLink = label && !(label.object instanceof Node);
+
+  if (labelledLink) {
+    if (label.object !== selectedObject) focusObject(label.object);
+    selection = [];
+    movingObject = false;
+    currentLink = null;
+    moveCaret(caretIndexAtX(label.place, p.x), false);
+    textDragging = true;
+    e.preventDefault();
+    return;
+  }
+
+  var target = objectAt(p.x, p.y);
+  var clickedOwnLabel = label && label.object === target;
+  if (target !== selectedObject) focusObject(target);
+  if (clickedOwnLabel) moveCaret(caretIndexAtX(label.place, p.x), false);
   movingObject = false;
   currentLink = null;
 
@@ -1262,6 +1474,16 @@ function startPan(e) {
 }
 
 function onMouseMove(e) {
+  if (textDragging && selectedObject) {
+    var place = selectedObject.labelPlace();
+    if (place) {
+      if (selectAnchor == null) selectAnchor = caretIndex;
+      caretIndex = caretIndexAtX(place, toWorld(e).x);
+      caretVisible = true;
+      draw();
+    }
+    return;
+  }
   if (rubberBand) {
     var r = toWorld(e);
     rubberBand.x1 = r.x;
@@ -1319,6 +1541,12 @@ function onMouseMove(e) {
 }
 
 function onMouseUp(e) {
+  if (textDragging) {
+    textDragging = false;
+    resetCaret();
+    draw();
+    return;
+  }
   if (rubberBand) {
     applyRubberBand();
     rubberBand = null;
@@ -1338,7 +1566,7 @@ function onMouseUp(e) {
   }
   if (currentLink) {
     if (!(currentLink instanceof TemporaryLink)) {
-      selectedObject = currentLink;
+      focusObject(currentLink);
       links.push(currentLink);
       resetCaret();
       saveState();
@@ -1353,12 +1581,12 @@ function onDoubleClick(e) {
   var target = objectAt(p.x, p.y);
   if (target instanceof Node) {
     target.isAcceptState = !target.isAcceptState;
-    selectedObject = target;
+    focusObject(target);
   } else if (!target) {
     var node = new Node(p.x, p.y);
     node.updateSize();
     nodes.push(node);
-    selectedObject = node;
+    focusObject(node);
   }
   resetCaret();
   saveState();
@@ -1375,6 +1603,11 @@ function onWheel(e) {
 function setSelectedText(text) {
   selectedObject.text = text;
   if (selectedObject instanceof Node) selectedObject.updateSize();
+  var count = scanUnits(text).length;
+  caretIndex = Math.max(0, Math.min(count, caretIndex));
+  if (selectAnchor != null) {
+    selectAnchor = Math.max(0, Math.min(count, selectAnchor));
+  }
   resetCaret();
   saveState();
   draw();
@@ -1390,14 +1623,35 @@ function onKeyDown(e) {
   var typingElsewhere = /^(INPUT|TEXTAREA)$/.test((e.target || {}).tagName || '');
   if (typingElsewhere) return;
 
-  if (e.key === 'Backspace') {
-    if (selectedObject) setSelectedText(selectedObject.text.slice(0, -1));
+  var editingLabel = textEditing && selectedObject;
+
+  if (e.key === 'ArrowLeft' && selectedObject) {
+    moveCaret(caretIndex - 1, e.shiftKey);
+    e.preventDefault();
+  } else if (e.key === 'ArrowRight' && selectedObject) {
+    moveCaret(caretIndex + 1, e.shiftKey);
+    e.preventDefault();
+  } else if (e.key === 'Home' && selectedObject) {
+    moveCaret(0, e.shiftKey);
+    e.preventDefault();
+  } else if (e.key === 'End' && selectedObject) {
+    moveCaret(editUnits().length, e.shiftKey);
+    e.preventDefault();
+  } else if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A') &&
+             selectedObject && selectedObject.text) {
+    selectAllText();
+    e.preventDefault();
+  } else if (e.key === 'Backspace') {
+    if (editingLabel) backspaceAtCaret();
+    else if (selectedObject) setSelectedText(selectedObject.text.slice(0, -1));
     e.preventDefault();
   } else if (e.key === 'Delete') {
-    deleteSelected();
+    // Inside a label, Delete removes highlighted text or the next glyph;
+    // it only falls through to removing the object when there is neither.
+    if (!(editingLabel && forwardDeleteAtCaret())) deleteSelected();
     e.preventDefault();
   } else if (e.key === 'Escape') {
-    selectedObject = null;
+    focusObject(null);
     selection = [];
     draw();
   } else if ((e.ctrlKey || e.metaKey) && (e.key === '=' || e.key === '+')) {
@@ -1410,19 +1664,156 @@ function onKeyDown(e) {
     resetView();
     e.preventDefault();
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
-    copySelection();
-    e.preventDefault();
+    // Highlighted label text wins; otherwise this copies the selected states.
+    // Left un-prevented when there is text, so the copy event can put it on
+    // the system clipboard.
+    if (!hasTextRange()) { copySelection(); e.preventDefault(); }
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'x' || e.key === 'X')) {
-    cutSelection();
-    e.preventDefault();
+    if (!hasTextRange()) { cutSelection(); e.preventDefault(); }
   } else if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
-    pasteClipboard();
-    e.preventDefault();
+    if (!editingLabel) { pasteClipboard(); e.preventDefault(); }
   } else if (!e.ctrlKey && !e.metaKey && !e.altKey &&
              e.key && e.key.length === 1 && selectedObject) {
-    setSelectedText(selectedObject.text + e.key);
+    if (textEditing) insertAtCaret(e.key);
+    else setSelectedText(selectedObject.text + e.key);
     e.preventDefault();
   }
+}
+
+/*
+ * Clipboard events rather than the keydown, so label text goes to and from
+ * the real system clipboard without asking for clipboard permissions.
+ */
+function onCopyEvent(e) {
+  if (modalOpen() || !hasTextRange()) return;
+  var text = selectedText();
+  textClipboard = text;
+  if (e.clipboardData) {
+    e.clipboardData.setData('text/plain', text);
+    e.preventDefault();
+  }
+}
+
+function onCutEvent(e) {
+  if (modalOpen() || !hasTextRange()) return;
+  onCopyEvent(e);
+  deleteTextRange();
+}
+
+function onPasteEvent(e) {
+  if (modalOpen() || !textEditing || !selectedObject) return;
+  var text = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+  if (!text) text = textClipboard;
+  if (!text) return;
+  e.preventDefault();
+  insertAtCaret(text.replace(/[\r\n\t]+/g, ' '));
+}
+
+/* ------------------------------------------------------------------ *
+ * Editing a label's text
+ * ------------------------------------------------------------------ */
+
+// Makes `obj` the edit target, with the caret parked at the end and nothing
+// highlighted. Called wherever the selection changes for a reason other than
+// clicking into a label.
+function focusObject(obj) {
+  selectedObject = obj;
+  selectAnchor = null;
+  textEditing = false;
+  textDragging = false;
+  caretIndex = obj ? scanUnits(obj.text).length : 0;
+}
+
+function editUnits() {
+  return selectedObject ? scanUnits(selectedObject.text) : [];
+}
+
+function hasTextRange() {
+  return textEditing && selectAnchor != null && selectAnchor !== caretIndex;
+}
+
+function textRange() {
+  return {
+    from: Math.min(selectAnchor, caretIndex),
+    to: Math.max(selectAnchor, caretIndex)
+  };
+}
+
+function selectedText() {
+  if (!hasTextRange()) return '';
+  var r = textRange();
+  return unitsToRaw(editUnits(), r.from, r.to);
+}
+
+function moveCaret(to, extend) {
+  var units = editUnits();
+  to = Math.max(0, Math.min(units.length, to));
+  if (extend) {
+    if (selectAnchor == null) selectAnchor = caretIndex;
+  } else {
+    selectAnchor = null;
+  }
+  caretIndex = to;
+  textEditing = true;
+  resetCaret();
+  draw();
+}
+
+function selectAllText() {
+  var units = editUnits();
+  if (!units.length) return;
+  selectAnchor = 0;
+  caretIndex = units.length;
+  textEditing = true;
+  resetCaret();
+  draw();
+}
+
+function deleteTextRange() {
+  var r = textRange();
+  var raw = rawWithout(editUnits(), r.from, r.to);
+  caretIndex = r.from;
+  selectAnchor = null;
+  setSelectedText(raw);
+}
+
+/*
+ * Typed and pasted text is spliced into the raw string at the glyph's own
+ * insertion point, so a character typed inside q_{start} stays inside the
+ * braces and stays subscript.
+ */
+function insertAtCaret(str) {
+  if (!selectedObject || !str) return;
+  if (hasTextRange()) deleteTextRange();
+
+  var raw = selectedObject.text;
+  var units = scanUnits(raw);
+  var at = caretIndex < units.length ? units[caretIndex].insertAt : raw.length;
+  var next = raw.slice(0, at) + str + raw.slice(at);
+
+  caretIndex += scanUnits(next).length - units.length;
+  selectAnchor = null;
+  textEditing = true;
+  setSelectedText(next);
+}
+
+function backspaceAtCaret() {
+  if (!selectedObject) return;
+  if (hasTextRange()) { deleteTextRange(); return; }
+  if (caretIndex <= 0) return;
+  var raw = rawWithout(editUnits(), caretIndex - 1, caretIndex);
+  caretIndex--;
+  selectAnchor = null;
+  setSelectedText(raw);
+}
+
+function forwardDeleteAtCaret() {
+  if (!selectedObject) return false;
+  if (hasTextRange()) { deleteTextRange(); return true; }
+  var units = editUnits();
+  if (caretIndex >= units.length) return false;
+  setSelectedText(rawWithout(units, caretIndex, caretIndex + 1));
+  return true;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1507,7 +1898,7 @@ function pasteClipboard() {
   }
 
   selection = created;
-  selectedObject = created.length === 1 ? created[0] : null;
+  focusObject(created.length === 1 ? created[0] : null);
   resetCaret();
   saveState();
   draw();
@@ -1535,7 +1926,7 @@ function deleteSelected() {
       links.splice(i, 1);
     }
   }
-  selectedObject = null;
+  focusObject(null);
   selection = [];
   saveState();
   draw();
@@ -1561,7 +1952,7 @@ function clearAll() {
   }
   nodes = [];
   links = [];
-  selectedObject = null;
+  focusObject(null);
   selection = [];
   rubberBand = null;
   currentLink = null;
@@ -1598,6 +1989,9 @@ function init() {
 
   document.addEventListener('keydown', onKeyDown);
   document.addEventListener('keyup', onKeyUp);
+  document.addEventListener('copy', onCopyEvent);
+  document.addEventListener('cut', onCutEvent);
+  document.addEventListener('paste', onPasteEvent);
 
   document.getElementById('clear-all').addEventListener('click', clearAll);
   document.getElementById('export-png').addEventListener('click', exportPng);

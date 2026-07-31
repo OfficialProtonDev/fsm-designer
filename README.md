@@ -29,6 +29,8 @@ things the original didn't do.
 | Move something | drag it around |
 | Select several states | right-drag a box around them (<kbd>Shift</kbd> to add) |
 | Move a selection | drag any highlighted state |
+| Edit mid-label | click into the label; <kbd>←</kbd> <kbd>→</kbd> <kbd>Home</kbd> <kbd>End</kbd> |
+| Highlight label text | drag across an arrow's label, <kbd>Shift</kbd>+arrows, or <kbd>Ctrl</kbd>+<kbd>A</kbd> |
 | Copy / cut / paste | <kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>X</kbd> / <kbd>V</kbd> |
 | Delete something | click it, press <kbd>Delete</kbd> |
 | Make accept state | double-click an existing state |
