@@ -315,6 +315,29 @@ test('no arrow is drawn through a label', () => {
     }
   }
 });
+test('no arrow passes between a label and its own line', () => {
+  const L = require('../src/layout');
+  const cases = [endsIn01, convert(endsIn01, 'nfa_to_dfa').machine, endsIn01Dfa, {
+    states: [{ name: 'a', start: true }, { name: 'b' }, { name: 'c' }, { name: 'd', accepting: true }],
+    transitions: [
+      { from: 'a', to: 'b', on: '0' }, { from: 'b', to: 'a', on: '1' },
+      { from: 'b', to: 'c', on: '0' }, { from: 'c', to: 'd', on: '1' },
+      { from: 'a', to: 'd', on: '1' }, { from: 'd', to: 'b', on: '0' }
+    ]
+  }];
+  for (const c of cases) {
+    const m = layout(M.normalize(c));
+    const paths = R.transitionPaths(m);
+    const labels = R.labelBoxes(m).filter(b => b.kind === 'label' && !b.empty);
+    for (const label of labels) {
+      for (const p of paths) {
+        if (p.index === label.index) continue;
+        assert.ok(!L.crossesTether(p, label),
+          `an arrow cuts between the label "${label.transition.label}" and its line in ${m.name}`);
+      }
+    }
+  }
+});
 test('arrows do not cross close to a state', () => {
   const L = require('../src/layout');
   const cases = [endsIn01, convert(endsIn01, 'nfa_to_dfa').machine, endsIn01Dfa, {

@@ -520,6 +520,9 @@ function labelBoxes(machine) {
     boxes.push({
       kind: 'label', transition: t, index,
       x: place.x, y: place.y,
+      // Where the label sits relative to its own arrow. The gap between the
+      // two is what ties one to the other by eye.
+      anchor: { x: g.mid.x, y: g.mid.y },
       width: Math.max(place.width, 6) + 4,
       height: place.height + 2,
       empty: !raw

@@ -23,7 +23,7 @@ const ROW_GAP = 132;
 const CLEARANCE = 46;         // how close an arrow may pass to an uninvolved state
 const LABEL_STEP = 9;         // how far to nudge a colliding label each round
 const MAX_LABEL_PUSH = 60;
-const CROSS_CLEARANCE = 62;   // how near a state two arrows may cross
+const CROSS_CLEARANCE = 55;   // clear space from a state outline a crossing needs
 
 function layout(machine, options = {}) {
   const m = M.normalize(machine);
@@ -271,9 +271,9 @@ function routeAroundStates(m) {
  * which is exactly the information the diagram exists to convey. So only
  * crossings near a state are counted, and only those are worth moving.
  */
-function crossingsNearStates(m, paths) {
+function crossings(m, paths) {
   paths = paths || R.transitionPaths(m);
-  const bad = [];
+  const found = [];
 
   for (let i = 0; i < paths.length; i++) {
     for (let j = i + 1; j < paths.length; j++) {
@@ -281,35 +281,53 @@ function crossingsNearStates(m, paths) {
       if (a.box.maxX < b.box.minX || b.box.maxX < a.box.minX ||
           a.box.maxY < b.box.minY || b.box.maxY < a.box.minY) continue;
 
-      // Arrows meeting at a shared endpoint touch there by design.
-      const shares = a.transition.from === b.transition.from ||
-        a.transition.from === b.transition.to ||
-        a.transition.to === b.transition.from ||
-        a.transition.to === b.transition.to;
-
-      let found = null;
-      for (let p = 0; p < a.points.length - 1 && !found; p++) {
+      let hit = null;
+      for (let p = 0; p < a.points.length - 1 && !hit; p++) {
         for (let q = 0; q < b.points.length - 1; q++) {
-          const hit = segmentsCross(a.points[p], a.points[p + 1],
+          hit = segmentsCross(a.points[p], a.points[p + 1],
             b.points[q], b.points[q + 1]);
-          if (hit) { found = hit; break; }
+          if (hit) break;
         }
       }
-      if (!found) continue;
+      if (!hit) continue;
 
-      let nearest = Infinity;
+      /*
+       * Distance to the nearest state's outline, not its centre: states here
+       * stretch to fit their labels, so a fixed radius from the centre would
+       * be far too generous for a wide one and too mean for a narrow one.
+       *
+       * Arrows that share an endpoint get no exemption. They are trimmed to
+       * different points on that state's outline, so they never have to cross
+       * at all -- when they do, it is exactly the tangle worth removing.
+       */
+      let clearance = Infinity;
       for (const s of m.states) {
-        nearest = Math.min(nearest, Math.hypot(found.x - s.x, found.y - s.y));
+        const half = R.halfWidthFor(s.label != null ? s.label : s.name);
+        const dx = Math.max(0, Math.abs(hit.x - s.x) - half);
+        const dy = Math.abs(hit.y - s.y);
+        clearance = Math.min(clearance, Math.hypot(dx, dy) - R.NODE_RADIUS);
       }
-      // Where two arrows share an endpoint, only a crossing well away from
-      // that state is a genuine tangle.
-      const limit = shares ? CROSS_CLEARANCE * 0.6 : CROSS_CLEARANCE;
-      if (nearest < limit) {
-        bad.push({ aIndex: a.index, bIndex: b.index, at: found, distance: nearest });
-      }
+      found.push({
+        aIndex: a.index, bIndex: b.index, at: hit,
+        clearance: Math.max(0, clearance),
+        near: clearance < CROSS_CLEARANCE
+      });
     }
   }
-  return bad;
+  return found;
+}
+
+function crossingsNearStates(m, paths) {
+  return crossings(m, paths).filter(c => c.near);
+}
+
+// Crossings beside a state are the real problem, but a crossing anywhere is
+// still worth avoiding when it costs nothing, so both count.
+function tangleScore(m) {
+  const all = crossings(m);
+  let score = 0;
+  for (const c of all) score += c.near ? 10 : 1;
+  return score;
 }
 
 function segmentsCross(p1, p2, p3, p4) {
@@ -349,14 +367,16 @@ function untangleNearStates(m) {
   if (m.transitions.length > 40) return m;   // too big to be worth the search
   const CANDIDATES = [0, 46, -46, 70, -70, 100, -100, 130, -130];
 
-  for (let round = 0; round < 5; round++) {
-    const bad = crossingsNearStates(m);
+  for (let round = 0; round < 8; round++) {
+    const bad = crossings(m);
     if (!bad.length) break;
 
+    // Blame a crossing beside a state more heavily than one in open space.
     const blame = new Map();
     for (const c of bad) {
-      blame.set(c.aIndex, (blame.get(c.aIndex) || 0) + 1);
-      blame.set(c.bIndex, (blame.get(c.bIndex) || 0) + 1);
+      const weight = c.near ? 10 : 1;
+      blame.set(c.aIndex, (blame.get(c.aIndex) || 0) + weight);
+      blame.set(c.bIndex, (blame.get(c.bIndex) || 0) + weight);
     }
     const worstFirst = [...blame.entries()]
       .sort((x, y) => y[1] - x[1]).map(e => e[0])
@@ -369,13 +389,13 @@ function untangleNearStates(m) {
       const t = m.transitions[index];
       const original = t.perpendicularPart || 0;
       let best = original;
-      let bestScore = bad.length;
+      let bestScore = tangleScore(m);
 
       for (const candidate of CANDIDATES) {
         if (candidate === original) continue;
         t.perpendicularPart = candidate;
         if (!pathClearOfStates(m, index)) continue;
-        const score = crossingsNearStates(m).length;
+        const score = tangleScore(m);
         // Prefer fewer crossings, and among equals the gentler curve.
         if (score < bestScore ||
             (score === bestScore && Math.abs(candidate) < Math.abs(best))) {
@@ -467,8 +487,44 @@ function labelClash(m, index, paths) {
   for (const p of paths) {
     if (p.index === index) continue;
     if (pathCrossesBox(p, mine)) score += 12;
+    // A label is read as belonging to the arrow it sits beside. Another arrow
+    // cutting through that gap breaks the association, so it costs as much as
+    // running over the text itself.
+    if (crossesTether(p, mine)) score += 12;
   }
   return score;
+}
+
+/*
+ * Does this arrow pass between a label and the arrow it labels? The gap is
+ * treated as the segment from the anchor on the path to the near edge of the
+ * text, which is the space the eye reads as tying the two together.
+ */
+function crossesTether(path, label) {
+  if (!label.anchor) return false;
+  const dx = label.x - label.anchor.x, dy = label.y - label.anchor.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) return false;
+
+  // Stop at the edge of the text rather than its centre; inside the box is
+  // already handled as an overlap.
+  const half = Math.min(length, (Math.abs(dx) / length) * label.width / 2 +
+    (Math.abs(dy) / length) * label.height / 2);
+  const end = {
+    x: label.x - dx / length * half,
+    y: label.y - dy / length * half
+  };
+  const start = label.anchor;
+
+  const minX = Math.min(start.x, end.x), maxX = Math.max(start.x, end.x);
+  const minY = Math.min(start.y, end.y), maxY = Math.max(start.y, end.y);
+  if (path.box.maxX < minX || path.box.minX > maxX ||
+      path.box.maxY < minY || path.box.minY > maxY) return false;
+
+  for (let i = 0; i < path.points.length - 1; i++) {
+    if (segmentsCross(start, end, path.points[i], path.points[i + 1])) return true;
+  }
+  return false;
 }
 
 function pathCrossesBox(path, box) {
@@ -499,5 +555,6 @@ function pointToSegment(px, py, x1, y1, x2, y2) {
 
 module.exports = {
   layout, assignCurves, separateLabels, orderRows, pointToSegment,
-  crossingsNearStates, untangleNearStates, pathCrossesBox
+  crossingsNearStates, crossings, tangleScore, untangleNearStates,
+  pathCrossesBox, crossesTether
 };
