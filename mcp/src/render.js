@@ -242,8 +242,13 @@ function render(machine, options = {}) {
   };
 }
 
-function drawLink(parts, bounds, from, to, t, label, colour, width) {
-  if (!from || !to) return;
+/*
+ * Where a link runs, separated from the drawing of it, so the layout pass can
+ * ask the same question the renderer will: where does this arrow actually go,
+ * and where does its label land?
+ */
+function linkGeometry(from, to, t) {
+  if (!from || !to) return null;
   const perp = t.perpendicularPart || 0;
   let at, geom;
 
@@ -278,7 +283,7 @@ function drawLink(parts, bounds, from, to, t, label, colour, width) {
 
   const t0 = findBoundary(at, 0, 1, from);
   const t1 = findBoundary(at, 1, 0, to);
-  if (t1 <= t0) return;
+  if (t1 <= t0) return null;
 
   const start = at(t0), end = at(t1), mid = at((t0 + t1) / 2);
   let d, endAngle, textAngle;
@@ -294,15 +299,20 @@ function drawLink(parts, bounds, from, to, t, label, colour, width) {
     endAngle = to1 + (delta > 0 ? Math.PI / 2 : -Math.PI / 2);
     textAngle = a0 + delta * (t0 + t1) / 2;
   }
-
-  parts.push(`<path d="${d}" fill="none" stroke="${colour}" stroke-width="${width}"/>`);
-  bounds.add(start.x, start.y); bounds.add(end.x, end.y); bounds.add(mid.x, mid.y);
-  arrowHead(parts, end.x, end.y, endAngle, colour);
-  drawLabel(parts, bounds, label, mid.x, mid.y, colour, textAngle);
+  return { d, start, end, mid, endAngle, textAngle, at, t0, t1 };
 }
 
-function drawSelfLoop(parts, bounds, shape, t, label, colour, width) {
-  if (!shape) return;
+function drawLink(parts, bounds, from, to, t, label, colour, width) {
+  const g = linkGeometry(from, to, t);
+  if (!g) return;
+  parts.push(`<path d="${g.d}" fill="none" stroke="${colour}" stroke-width="${width}"/>`);
+  bounds.add(g.start.x, g.start.y); bounds.add(g.end.x, g.end.y); bounds.add(g.mid.x, g.mid.y);
+  arrowHead(parts, g.end.x, g.end.y, g.endAngle, colour);
+  drawLabel(parts, bounds, label, g.mid.x, g.mid.y, colour, g.textAngle, t.labelOffset);
+}
+
+function selfLoopGeometry(shape, t) {
+  if (!shape) return null;
   const angle = t.anchorAngle != null ? t.anchorAngle : -Math.PI / 2;
   const cos = Math.cos(angle), sin = Math.sin(angle);
   const edge = boundaryToward(shape, shape.x + cos * 4000, shape.y + sin * 4000);
@@ -343,16 +353,25 @@ function drawSelfLoop(parts, bounds, shape, t, label, colour, width) {
     if (a1 < a0) a1 += Math.PI * 2;
   }
 
-  parts.push(`<path d="${arcPath({ x: cx, y: cy, radius }, a0, a1, false)}" fill="none" stroke="${colour}" stroke-width="${width}"/>`);
-  bounds.add(cx - radius, cy - radius);
-  bounds.add(cx + radius, cy + radius);
-
-  const tip = at(a1);
-  arrowHead(parts, tip.x, tip.y, a1 + Math.PI / 2, colour);
-
   const midAngle = (a0 + a1) / 2;
-  drawLabel(parts, bounds, label,
-    cx + radius * Math.cos(midAngle), cy + radius * Math.sin(midAngle), colour, midAngle);
+  return {
+    d: arcPath({ x: cx, y: cy, radius }, a0, a1, false),
+    circle: { x: cx, y: cy, radius },
+    tip: at(a1),
+    endAngle: a1 + Math.PI / 2,
+    mid: { x: cx + radius * Math.cos(midAngle), y: cy + radius * Math.sin(midAngle) },
+    textAngle: midAngle
+  };
+}
+
+function drawSelfLoop(parts, bounds, shape, t, label, colour, width) {
+  const g = selfLoopGeometry(shape, t);
+  if (!g) return;
+  parts.push(`<path d="${g.d}" fill="none" stroke="${colour}" stroke-width="${width}"/>`);
+  bounds.add(g.circle.x - g.circle.radius, g.circle.y - g.circle.radius);
+  bounds.add(g.circle.x + g.circle.radius, g.circle.y + g.circle.radius);
+  arrowHead(parts, g.tip.x, g.tip.y, g.endAngle, colour);
+  drawLabel(parts, bounds, label, g.mid.x, g.mid.y, colour, g.textAngle, t.labelOffset);
 }
 
 function drawStartArrow(parts, bounds, shape, colour, width) {
@@ -374,17 +393,27 @@ function arrowHead(parts, x, y, angle, colour) {
   parts.push(`<polygon points="${p1} ${p2} ${p3}" fill="${colour}" stroke="none"/>`);
 }
 
-function drawLabel(parts, bounds, raw, x, y, colour, angle) {
-  const segments = labelSegments(raw);
-  if (!segments.length) return;
+// Where a label lands, given its anchor and how far the layout pass wants it
+// pushed clear of whatever it was colliding with.
+function labelPlacement(raw, x, y, angle, extraPush) {
   const width = labelWidth(raw);
-
   if (angle != null) {
     const nx = Math.cos(angle), ny = Math.sin(angle);
-    const push = 8 + Math.abs(nx) * (width / 2) + Math.abs(ny) * (FONT_SIZE / 2);
+    const push = 8 + Math.abs(nx) * (width / 2) + Math.abs(ny) * (FONT_SIZE / 2)
+      + (extraPush || 0);
     x += nx * push;
     y += ny * push;
   }
+  return { x, y, width, height: FONT_SIZE };
+}
+
+function drawLabel(parts, bounds, raw, x, y, colour, angle, extraPush) {
+  const segments = labelSegments(raw);
+  if (!segments.length) return;
+  const place = labelPlacement(raw, x, y, angle, extraPush);
+  const width = place.width;
+  x = place.x;
+  y = place.y;
 
   let cursor = x - width / 2;
   for (const seg of segments) {
@@ -445,4 +474,52 @@ class Bounds {
   }
 }
 
-module.exports = { render, labelWidth, labelSegments, halfWidthFor, NODE_RADIUS };
+/*
+ * Every label's rectangle, and every state's, in one list. The layout pass
+ * uses this to find overlaps: it asks the renderer where things will actually
+ * end up rather than estimating, so the two can never disagree.
+ */
+function labelBoxes(machine) {
+  const m = M.normalize(machine);
+  const shapes = new Map(m.states.map(s => [s.id, nodeShape(s)]));
+  const boxes = [];
+
+  for (const s of m.states) {
+    const shape = shapes.get(s.id);
+    boxes.push({
+      kind: 'state', id: s.id,
+      x: shape.x, y: shape.y,
+      width: (shape.halfWidth + NODE_RADIUS) * 2,
+      height: NODE_RADIUS * 2
+    });
+  }
+
+  for (const t of m.transitions) {
+    const raw = t.label != null && t.label !== ''
+      ? t.label : M.symbolsToLabel(t.symbols, t.epsilon);
+    const g = t.from === t.to
+      ? selfLoopGeometry(shapes.get(t.from), t)
+      : linkGeometry(shapes.get(t.from), shapes.get(t.to), t);
+    if (!g) continue;
+    const place = labelPlacement(raw, g.mid.x, g.mid.y, g.textAngle, t.labelOffset);
+    boxes.push({
+      kind: 'label', transition: t,
+      x: place.x, y: place.y,
+      width: Math.max(place.width, 6) + 4,
+      height: place.height + 2,
+      empty: !raw
+    });
+  }
+  return boxes;
+}
+
+function overlap(a, b) {
+  const dx = Math.abs(a.x - b.x) - (a.width + b.width) / 2;
+  const dy = Math.abs(a.y - b.y) - (a.height + b.height) / 2;
+  return dx < 0 && dy < 0 ? Math.min(-dx, -dy) : 0;
+}
+
+module.exports = {
+  render, labelWidth, labelSegments, halfWidthFor, labelBoxes, overlap,
+  linkGeometry, selfLoopGeometry, nodeShape, labelPlacement, NODE_RADIUS
+};

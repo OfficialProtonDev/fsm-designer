@@ -73,7 +73,10 @@ function traceFrames(machine, input) {
     svg: frames.length ? frames[frames.length - 1].svg : render(laid, { viewBox }).svg,
     caption: verdict,
     consumed: input, remaining: '',
-    final: true, accepted: run.accepted,
+    final: true,
+    // Only a run has a verdict to colour. A conversion's last frame is a
+    // result, not a rejection.
+    verdict: run.accepted ? 'accepted' : 'rejected',
     index: frames.length
   });
 
@@ -176,7 +179,7 @@ function buildHtml(anim, options = {}) {
     consumed: f.consumed || '',
     remaining: f.remaining || '',
     final: !!f.final,
-    accepted: !!f.accepted
+    verdict: f.verdict || ''
   }));
   const speed = options.speed || 1100;
   const showTape = frames.some(f => f.consumed || f.remaining);
@@ -257,7 +260,7 @@ function show(k) {
   var f = FRAMES[i];
   stage.innerHTML = f.svg;
   caption.textContent = f.caption;
-  caption.className = f.final ? ('final ' + (f.accepted ? 'accepted' : 'rejected')) : '';
+  caption.className = f.final ? ('final ' + (f.verdict || '')).trim() : '';
   if (tape) {
     tape.innerHTML = f.consumed || f.remaining
       ? '<span class="done">' + escapeHtml(f.consumed) + '</span>' +

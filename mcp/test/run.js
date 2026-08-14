@@ -9,7 +9,8 @@ const { simulate, testStrings } = require('../src/simulate');
 const { convert } = require('../src/convert');
 const { compare, sampleLanguage } = require('../src/equivalence');
 const { layout } = require('../src/layout');
-const { render } = require('../src/render');
+const R = require('../src/render');
+const { render } = R;
 const { animate } = require('../src/animate');
 const { handleMessage } = require('../src/index');
 
@@ -241,6 +242,96 @@ test('layout gives every state a position', () => {
     assert.strictEqual(typeof s.x, 'number');
     assert.strictEqual(typeof s.y, 'number');
   }
+});
+// Counts everything a reader would see as a collision.
+function collisions(m) {
+  const boxes = require('../src/render').labelBoxes(m);
+  const overlap = require('../src/render').overlap;
+  const labels = boxes.filter(b => b.kind === 'label' && !b.empty);
+  const states = boxes.filter(b => b.kind === 'state');
+  let n = 0;
+  for (let i = 0; i < labels.length; i++) {
+    for (const s of states) if (overlap(labels[i], s) > 0.5) n++;
+    for (let j = i + 1; j < labels.length; j++) if (overlap(labels[i], labels[j]) > 0.5) n++;
+  }
+  for (let i = 0; i < states.length; i++) {
+    for (let j = i + 1; j < states.length; j++) if (overlap(states[i], states[j]) > 0.5) n++;
+  }
+  return n;
+}
+
+test('laid-out machines have no overlapping labels or states', () => {
+  const cases = [
+    endsIn01,
+    convert(endsIn01, 'nfa_to_dfa').machine,
+    withEpsilon,
+    // a denser machine: every state loops and talks to the next
+    {
+      states: [{ name: 'a', start: true }, { name: 'b' }, { name: 'c' }, { name: 'd', accepting: true }],
+      transitions: [
+        { from: 'a', to: 'a', on: '0' }, { from: 'a', to: 'b', on: '1' },
+        { from: 'b', to: 'b', on: '1' }, { from: 'b', to: 'c', on: '0' },
+        { from: 'c', to: 'c', on: '0' }, { from: 'c', to: 'd', on: '1' },
+        { from: 'd', to: 'a', on: '0' }, { from: 'c', to: 'a', on: '1' }
+      ]
+    },
+    // long names, which stretch states into wide pills
+    {
+      states: [{ name: 'WaitingForInput', start: true }, { name: 'ProcessingRequest' },
+        { name: 'Done', accepting: true }],
+      transitions: [
+        { from: 'WaitingForInput', to: 'ProcessingRequest', on: 'go' },
+        { from: 'ProcessingRequest', to: 'WaitingForInput', on: 'retry' },
+        { from: 'ProcessingRequest', to: 'Done', on: 'ok' }
+      ]
+    }
+  ];
+  for (const c of cases) {
+    const m = layout(M.normalize(c));
+    assert.strictEqual(collisions(m), 0, `overlaps in ${m.name}`);
+  }
+});
+test('wide states get columns wide enough not to touch', () => {
+  const m = layout(M.normalize({
+    states: [{ name: 'AVeryLongStateName', start: true }, { name: 'AnotherLongOne', accepting: true }],
+    transitions: [{ from: 'AVeryLongStateName', to: 'AnotherLongOne', on: '1' }]
+  }));
+  const gap = Math.abs(m.states[1].x - m.states[0].x)
+    - R.halfWidthFor('AVeryLongStateName') - R.halfWidthFor('AnotherLongOne')
+    - R.NODE_RADIUS * 2;
+  assert.ok(gap > 40, `columns too close: ${Math.round(gap)}px`);
+});
+test('self-loops avoid the arrows already at a state', () => {
+  // b has arrows in from a and out to c, both horizontal, plus a self-loop.
+  const m = layout(M.normalize({
+    states: [{ name: 'a', start: true }, { name: 'b' }, { name: 'c', accepting: true }],
+    transitions: [
+      { from: 'a', to: 'b', on: '1' }, { from: 'b', to: 'c', on: '1' },
+      { from: 'b', to: 'b', on: '0' }
+    ]
+  }));
+  const loop = m.transitions.find(t => t.from === t.to);
+  // must not point along the horizontal, where the other two arrows run
+  assert.ok(Math.abs(Math.cos(loop.anchorAngle)) < 0.9,
+    `loop points along the incoming arrows (angle ${loop.anchorAngle})`);
+});
+test('row ordering reduces crossings', () => {
+  // Deliberately declared in an order that crosses if left alone.
+  const m = layout(M.normalize({
+    states: [{ name: 's', start: true }, { name: 'x1' }, { name: 'x2' },
+      { name: 'y1' }, { name: 'y2', accepting: true }],
+    transitions: [
+      { from: 's', to: 'x1', on: '0' }, { from: 's', to: 'x2', on: '1' },
+      { from: 'x1', to: 'y1', on: '0' }, { from: 'x2', to: 'y2', on: '1' }
+    ]
+  }));
+  const at = n => m.states.find(s => s.name === n);
+  // x1->y1 and x2->y2 must not swap vertical order
+  assert.strictEqual(
+    Math.sign(at('x1').y - at('x2').y),
+    Math.sign(at('y1').y - at('y2').y),
+    'connected pairs should stay on the same side'
+  );
 });
 test('opposite arrows bow apart', () => {
   const m = layout(M.normalize({
