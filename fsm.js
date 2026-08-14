@@ -1126,8 +1126,15 @@ function restoreState() {
 window.fsmDesigner = {
   getDoc: function () { return serializeDoc(true); },
   setDoc: function (doc, keepView) {
-    var ok = loadDoc(doc, keepView !== false);
-    if (ok) { fitToContent(); saveState(); }
+    // keepView governs the refit as well as the pan/zoom restore. It used to
+    // only do the latter, so every caller got the viewport yanked to fit --
+    // including the sync client applying an edit under someone's cursor.
+    var keep = keepView !== false;
+    var ok = loadDoc(doc, keep);
+    if (ok) {
+      if (!keep) fitToContent();
+      saveState();
+    }
     return ok;
   },
   isEmpty: function () { return nodes.length === 0 && links.length === 0; },

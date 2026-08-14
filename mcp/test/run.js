@@ -5,6 +5,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const store = require('../src/store');
 const M = require('../src/machine');
 const { analyze } = require('../src/analyze');
 const { simulate, testStrings } = require('../src/simulate');
@@ -598,10 +599,98 @@ function call(method, params) {
     assert.strictEqual(match[2], token);
   });
 
+  // A designer push must come back labelled, or the tab that made it cannot
+  // tell its own edit from someone else's and reloads the canvas mid-drag.
+  const auth = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  const before = (await (await fetch(`${origin}/api/machine`, { headers: auth })).json()).version;
+  await fetch(`${origin}/api/machine`, {
+    method: 'POST', headers: auth,
+    body: JSON.stringify({ doc: { nodes: [{ x: 1, y: 1, text: 'z' }], links: [] }, client: 'tab-abc' })
+  });
+  const echoed = await (await fetch(`${origin}/api/poll?since=${before}`, { headers: auth })).json();
+  test('a change says who made it, so a tab can ignore its own', () => {
+    assert.strictEqual(echoed.changed, true);
+    assert.strictEqual(echoed.client, 'tab-abc');
+    assert.strictEqual(echoed.updatedBy, 'designer');
+  });
+
+  store.set({ nodes: [{ x: 2, y: 2, text: 'y' }], links: [] }, 'claude');
+  const fromClaude = await (await fetch(`${origin}/api/poll?since=${echoed.version}`, { headers: auth })).json();
+  test('a change from Claude is labelled as such, and carries no tab id', () => {
+    assert.strictEqual(fromClaude.updatedBy, 'claude');
+    assert.ok(!fromClaude.client, 'Claude is not a tab, so nothing should be ignored on its account');
+  });
+
+  /*
+   * Pairing. A page that already has the designer open can ask for the token
+   * rather than being sent a fresh link, but only if the browser says it came
+   * from somewhere we trust -- and a page cannot lie about that.
+   */
+  const paired = await (await fetch(`${origin}/api/pair`, {
+    headers: { Origin: 'https://officialprotondev.github.io' }
+  })).json();
+  test('the published designer may pair', () => {
+    assert.strictEqual(paired.token, token);
+    assert.strictEqual(paired.port, started.port);
+  });
+
+  const localPair = await (await fetch(`${origin}/api/pair`, {
+    headers: { Origin: `http://localhost:${started.port}` }
+  })).json();
+  test('a locally served copy may pair', () => {
+    assert.strictEqual(localPair.token, token);
+  });
+
+  const evil = await fetch(`${origin}/api/pair`, { headers: { Origin: 'https://evil.example' } });
+  test('anywhere else is refused the token', async () => {
+    assert.strictEqual(evil.status, 403);
+  });
+
+  test('pairing needs no token of its own — that is the point', () => {
+    assert.ok(!paired.error, 'it must answer without being given a token first');
+  });
+
+  // The tab needs to know whether the server's copy is live or last session's
+  // leftovers, because only the second should lose to work already on screen.
+  const live = await (await fetch(`${origin}/api/machine`, { headers: auth })).json();
+  test('a document written this run is not stale', () => {
+    assert.strictEqual(live.stale, false);
+  });
+
   bridge.stop();
   test('stopping retires the token', () => {
     assert.strictEqual(bridge.status().token, null);
     assert.strictEqual(bridge.status().linkedUrl, null);
+  });
+
+  /* --- choosing which page to hand over --- */
+
+  const asked = await call('tools/call', { name: 'open_designer', arguments: {} });
+  test('the first call asks rather than picking a page', () => {
+    const body = asked.result.content[0].text;
+    assert.match(body, /Ask the user/);
+    assert.ok(body.includes('local') && body.includes('linked'));
+    assert.ok(!body.includes('http://localhost:4319/'), 'it should not hand out a URL yet');
+    assert.strictEqual(bridge.status().running, false, 'and should not start the server yet');
+  });
+
+  const chose = await call('tools/call', { name: 'open_designer', arguments: { target: 'linked', port: 0 } });
+  test('a stated choice is honoured', () => {
+    const body = chose.result.content[0].text;
+    assert.ok(body.includes(bridge.status().linkedUrl), 'the linked URL should be the one offered');
+    assert.match(body, /fall back to/);
+  });
+
+  const again = await call('tools/call', { name: 'open_designer', arguments: {} });
+  test('the choice is remembered, so it asks only once', () => {
+    const body = again.result.content[0].text;
+    assert.ok(!/Ask the user/.test(body), 'it should not ask a second time');
+    assert.ok(body.includes(bridge.status().linkedUrl));
+  });
+
+  bridge.stop();
+  test('stopping forgets the choice too', () => {
+    assert.strictEqual(bridge.preference(), null);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);

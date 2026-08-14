@@ -55,14 +55,31 @@ const PUBLIC_URL = process.env.FSM_DESIGNER_PUBLIC_URL ||
 let server = null;
 let actualPort = null;
 let token = null;
-const waiters = [];   // long-poll clients waiting for a change
+let preferred = null;   // 'local' or 'linked', once the user has said which
+const waiters = [];     // long-poll clients waiting for a change
+
+/*
+ * Which page the user wants is a question about their browser and their
+ * habits, and guessing it wrongly is expensive: the linked copy may be
+ * refused outright, and the local copy abandons whatever tab they already
+ * have. So it is asked once and then remembered for the life of the process,
+ * which is one working session.
+ */
+function preference() { return preferred; }
+function setPreference(choice) {
+  if (choice === 'local' || choice === 'linked') preferred = choice;
+  return preferred;
+}
 
 function notify() {
   const current = store.get();
   while (waiters.length) {
     const w = waiters.pop();
     clearTimeout(w.timer);
-    respondJson(w.res, 200, { version: current.version, doc: current.doc, changed: true });
+    respondJson(w.res, 200, {
+      version: current.version, doc: current.doc, changed: true,
+      updatedBy: current.updatedBy, client: current.client
+    });
   }
 }
 
@@ -93,6 +110,14 @@ function respondJson(res, code, body) {
 function ensureToken() {
   if (!token) token = crypto.randomBytes(24).toString('hex');
   return token;
+}
+
+// The published designer, and any copy served from this machine.
+function pairAllowed(origin) {
+  let host;
+  try { host = new URL(origin); } catch (e) { return false; }
+  if (host.hostname === 'localhost' || host.hostname === '127.0.0.1') return true;
+  try { return host.origin === new URL(PUBLIC_URL).origin; } catch (e) { return false; }
 }
 
 // Bearer header for the browser; ?token= as well, because debugging this with
@@ -158,6 +183,25 @@ function handle(req, res) {
     return;
   }
 
+  /*
+   * Hands the token to a page that already has the designer open, so it can
+   * connect without being sent a fresh link and losing its work.
+   *
+   * The check is the Origin header, which is worth more than it looks: a
+   * browser sets it itself and page script cannot forge it. So a page on some
+   * other site asking for the token is turned away by the browser's own
+   * honesty, and only the published designer or a local copy gets an answer.
+   */
+  if (route === '/api/pair') {
+    const origin = String(req.headers.origin || '');
+    if (origin && !pairAllowed(origin)) {
+      respondJson(res, 403, { error: 'pairing is not offered to ' + origin });
+      return;
+    }
+    respondJson(res, 200, { port: actualPort, token: ensureToken() });
+    return;
+  }
+
   if (route.startsWith('/api/') && !authorized(req, url)) {
     respondJson(res, 403, { error: 'bad or missing token' });
     return;
@@ -165,7 +209,10 @@ function handle(req, res) {
 
   if (route === '/api/machine' && req.method === 'GET') {
     const s = store.get();
-    respondJson(res, 200, { version: s.version, doc: s.doc, updatedBy: s.updatedBy });
+    respondJson(res, 200, {
+      version: s.version, doc: s.doc, updatedBy: s.updatedBy,
+      client: s.client, stale: !!s.stale
+    });
     return;
   }
 
@@ -177,7 +224,7 @@ function handle(req, res) {
         return;
       }
       const doc = parsed && parsed.doc ? parsed.doc : parsed;
-      const s = store.set(doc, 'designer');
+      const s = store.set(doc, 'designer', parsed && parsed.client);
       respondJson(res, 200, { version: s.version, ok: true });
       notify();
     }).catch(() => respondJson(res, 400, { error: 'bad request' }));
@@ -189,7 +236,10 @@ function handle(req, res) {
     const since = Number(url.searchParams.get('since') || 0);
     const s = store.get();
     if (s.version > since) {
-      respondJson(res, 200, { version: s.version, doc: s.doc, changed: true });
+      respondJson(res, 200, {
+        version: s.version, doc: s.doc, changed: true,
+        updatedBy: s.updatedBy, client: s.client
+      });
       return;
     }
     const waiter = { res, timer: null };
@@ -223,7 +273,9 @@ function start(port) {
       server = null;
       reject(err);
     });
-    server.listen(port || 4319, '127.0.0.1', () => {
+    // Port 0 means "any free port" and must survive the defaulting, or a test
+    // asking for one quietly gets 4319 and collides with a real server.
+    server.listen(port === undefined || port === null ? 4319 : port, '127.0.0.1', () => {
       actualPort = server.address().port;
       resolve({ port: actualPort, token: ensureToken(), alreadyRunning: false });
     });
@@ -237,6 +289,7 @@ function stop() {
   server = null;
   actualPort = null;
   token = null;      // a restart mints a new one, retiring any link already handed out
+  preferred = null;  // and the question is worth asking again
 }
 
 // The token rides in the fragment, which browsers never send to the server the
@@ -253,6 +306,7 @@ function status() {
     running: !!server,
     port: actualPort,
     token,
+    preferred,
     url: actualPort ? `http://localhost:${actualPort}/` : null,
     linkedUrl: linkedUrl()
   };
@@ -261,4 +315,4 @@ function status() {
 // Called after a tool changes the document, so an open designer picks it up.
 function pushed() { notify(); }
 
-module.exports = { start, stop, status, pushed };
+module.exports = { start, stop, status, pushed, preference, setPreference };

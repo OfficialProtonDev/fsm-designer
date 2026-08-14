@@ -97,7 +97,7 @@ button.danger:hover { background: #fae7e7; }
 
 #help li { margin: 3px 0; }
 
-#help code {
+#help code, #claude-help code {
   font-family: "SFMono-Regular", Consolas, monospace;
   background: #f4f4f4;
   padding: 1px 4px;
@@ -167,3 +167,24 @@ footer a { color: var(--accent); }
   gap: 8px;
   justify-content: flex-end;
 }
+
+/*
+ * Only ever added by the sync client, and only when this browser has not yet
+ * agreed to look for a local Claude session. It borrows the toolbar's shape
+ * and takes the blue of the status pill so the two read as one feature.
+ */
+#claude-help {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+#claude-help p { margin: 8px 0; }
+
+#bridge-connect {
+  border-color: #cfe0ff;
+  background: #eef4ff;
+  color: #1a56db;
+}
+#bridge-connect:hover { background: #e2ecff; }
+#bridge-connect:disabled { opacity: .6; cursor: default; }

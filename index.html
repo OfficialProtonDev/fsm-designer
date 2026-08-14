@@ -59,6 +59,35 @@
   <p class="note">The canvas is unbounded &mdash; pan and zoom to build diagrams of any size. States automatically stretch into a pill shape so long names fit inside them.</p>
 </div>
 
+<div id="claude-help">
+  <p><b>The &ldquo;Connect to Claude&rdquo; button</b></p>
+  <p>
+    This page can hand the machine you have drawn to
+    <a href="https://claude.com/claude-code" rel="noopener">Claude Code</a> running
+    <em>on your own computer</em>, so you can ask it things about your actual diagram
+    instead of describing one. It can then read the machine, tell you what is wrong with
+    it, run strings through it, convert it &mdash; determinise, minimise, complement,
+    reverse &mdash; and animate the working step by step. Anything it changes appears on
+    your canvas about a second later, still yours to edit.
+  </p>
+  <p>
+    <b>To connect:</b> install the
+    <a href="https://github.com/OfficialProtonDev/fsm-designer/tree/main/mcp" rel="noopener">fsm-designer MCP server</a>,
+    ask Claude to open the designer, then press <b>Connect to Claude</b> in the toolbar
+    above. Whatever is already on your canvas is carried over &mdash; you do not lose your
+    work by connecting. Your browser remembers the choice, so later visits reconnect on
+    their own.
+  </p>
+  <p class="note">
+    Nothing is sent anywhere except to that program on your own machine, over a plain
+    <code>localhost</code> connection. This site has no server of its own and no account
+    to sign in to; your diagrams have always lived in this browser and still do. Until
+    you press the button the page makes no such connection at all, and if you never
+    press it, it never looks. A one-time key means only the session you connected to can
+    read or change the canvas, and it stops working when that session ends.
+  </p>
+</div>
+
 <footer>
   <p>
     An independent rebuild of the

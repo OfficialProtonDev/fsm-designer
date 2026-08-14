@@ -36,6 +36,10 @@ function load() {
         version: parsed.version || 1,
         doc: parsed.doc,
         updatedBy: parsed.updatedBy || 'disk',
+        // Nothing has touched this document *this run* -- it is last session's
+        // leftovers. A tab with real work on it should win against this, or
+        // reconnecting quietly destroys what the person was drawing.
+        stale: true,
         updatedAt: parsed.updatedAt || new Date().toISOString()
       };
     }
@@ -60,11 +64,17 @@ function persist() {
 
 function get() { return state; }
 
-function set(doc, updatedBy) {
+// `client` identifies *which* designer tab wrote, so that tab can recognise
+// its own change coming back and leave the canvas alone. Without it a person
+// dragging a state gets their own edit echoed at them, which resets the view
+// and can undo the drag still in progress.
+function set(doc, updatedBy, client) {
   state = {
     version: state.version + 1,
     doc: doc || EMPTY,
     updatedBy: updatedBy || 'server',
+    client: client || null,
+    stale: false,          // written this run, so it is the live document
     updatedAt: new Date().toISOString()
   };
   persist();

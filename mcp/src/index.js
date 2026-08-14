@@ -428,26 +428,57 @@ const TOOLS = [
     description:
       'Start the local server that hosts the FSM Designer and keeps it in sync with these tools, and return ' +
       'the URL for the user to open. Anything they draw becomes visible to get_machine; anything pushed with ' +
-      'set_machine appears in their editor. Call this first in a session that involves the user\'s own drawing.',
+      'set_machine appears in their editor. Call this first in a session that involves the user\'s own drawing. ' +
+      'Two pages can be handed over and the user picks: call this with no target the first time and it will ' +
+      'tell you what to ask them.',
     inputSchema: {
       type: 'object',
-      properties: { port: { type: 'integer', minimum: 1024, maximum: 65535, description: 'Default 4319.' } },
+      properties: {
+        port: { type: 'integer', minimum: 1024, maximum: 65535, description: 'Default 4319.' },
+        target: {
+          enum: ['local', 'linked'],
+          description:
+            'Which page to hand over. "local" is served from this server at http://localhost. "linked" is ' +
+            'the published site pointed back at it. Leave this out on the first call of a session — the ' +
+            'tool will ask you to put the choice to the user, and remembers the answer afterwards.'
+        }
+      },
       additionalProperties: false
     },
     async run(args) {
+      // Refuse to guess. Which page suits depends on the user's browser and on
+      // whether they already have a tab of work open, and neither is knowable
+      // from here -- so the first call comes back as a question, not a URL.
+      const choice = args.target || bridge.preference();
+      if (!choice) {
+        return text(
+          'Ask the user which page they want, then call open_designer again with target set to their ' +
+          'answer. Do not pick for them. Put it roughly like this:\n\n' +
+          '  local  — Served from this machine on a localhost address. Always works, and is the ' +
+          'safe answer if they have no preference. Costs them a new tab.\n\n' +
+          '  linked — The published site at the usual public address, pointed back at this server. ' +
+          'Keeps them on the URL they know and whatever they have already drawn there. Needs the ' +
+          'browser to permit a public page reaching localhost, which most do but not all; if it is ' +
+          'refused the page says so and local still works.\n\n' +
+          'The answer is remembered until the server stops, so this is asked once per session.'
+        );
+      }
+
+      bridge.setPreference(choice);
       const existing = bridge.status();
       if (!existing.running) await bridge.start(args.port);
       const s = bridge.status();
+      const url = choice === 'linked' ? s.linkedUrl : s.url;
+      const other = choice === 'linked' ? s.url : s.linkedUrl;
+
       return text(
         (existing.running ? 'Already running.\n\n' : '') +
-        `Local copy:  ${s.url}\n` +
-        `Linked copy: ${s.linkedUrl}\n\n` +
-        'Either page syncs both ways: what the user draws is readable with get_machine, and ' +
-        'set_machine updates what they see.\n\n' +
-        'Offer the local URL first — it is same-origin and always works. The linked URL is the ' +
-        'published site pointed at this server, carrying the port and a token in its fragment. ' +
-        'Browsers are increasingly strict about a public page reaching localhost, so if it does ' +
-        'not connect the page will say so and the local URL remains the fallback.\n\n' +
+        `Give the user this URL (${choice}):\n\n  ${url}\n\n` +
+        'It syncs both ways: what they draw is readable with get_machine, and set_machine updates ' +
+        'what they see.\n\n' +
+        (choice === 'linked'
+          ? `If it does not connect — the page will say so rather than sit there empty — fall back to ${other}\n\n`
+          : `The published site can also be linked to this server if they would rather: ${other}\n\n`) +
         'The token dies when the server stops, so a link handed out earlier stops working after a restart.'
       );
     }
