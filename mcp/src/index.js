@@ -99,8 +99,18 @@ const TOOLS = [
       const current = store.get();
       const machine = M.docToMachine(current.doc, 'current');
       if (!machine.states.length) {
+        // These two cases look identical from here and need opposite advice,
+        // so say which one it is. Claiming a connection that was never made
+        // sends people hunting through a drawing that was never the problem.
+        if (!bridge.status().running) {
+          return text('No designer is connected — the local server is not running, so nothing ' +
+            'the user draws can reach these tools. A designer tab opened any other way (the ' +
+            'published site, a file:// path, another static server) is invisible here.\n\n' +
+            'Run open_designer, have the user open one of the URLs it gives, or pass a machine ' +
+            'directly to the other tools.');
+        }
         return text('The designer is connected but the canvas is empty.\n\n' +
-          'Run open_designer to get the editor URL, or pass a machine directly to the other tools.');
+          'The user may have a different tab open — only a page opened from open_designer syncs.');
       }
       const report = analyze(machine);
       return json({
@@ -426,16 +436,19 @@ const TOOLS = [
     },
     async run(args) {
       const existing = bridge.status();
-      if (existing.running) {
-        return text(`Already running at ${existing.url}\nOpen that in a browser; the diagram there syncs with these tools.`);
-      }
-      const { port } = await bridge.start(args.port);
+      if (!existing.running) await bridge.start(args.port);
+      const s = bridge.status();
       return text(
-        `FSM Designer is now served at http://localhost:${port}/\n\n` +
-        'Open that URL. The page syncs both ways: what the user draws is readable with get_machine, ' +
-        'and set_machine updates what they see.\n\n' +
-        'Note this is the local copy, not the published site — a page on https:// cannot talk to ' +
-        'http://localhost, so the editor has to be served from here for syncing to work.'
+        (existing.running ? 'Already running.\n\n' : '') +
+        `Local copy:  ${s.url}\n` +
+        `Linked copy: ${s.linkedUrl}\n\n` +
+        'Either page syncs both ways: what the user draws is readable with get_machine, and ' +
+        'set_machine updates what they see.\n\n' +
+        'Offer the local URL first — it is same-origin and always works. The linked URL is the ' +
+        'published site pointed at this server, carrying the port and a token in its fragment. ' +
+        'Browsers are increasingly strict about a public page reaching localhost, so if it does ' +
+        'not connect the page will say so and the local URL remains the fallback.\n\n' +
+        'The token dies when the server stops, so a link handed out earlier stops working after a restart.'
       );
     }
   },
@@ -694,8 +707,9 @@ function main() {
 
 if (require.main === module) {
   if (process.argv.includes('--serve')) {
-    bridge.start(4319).then(({ port }) => {
-      process.stderr.write(`Designer served at http://localhost:${port}/\n`);
+    bridge.start(4319).then(() => {
+      const s = bridge.status();
+      process.stderr.write(`Designer served at ${s.url}\nLinked copy: ${s.linkedUrl}\n`);
     });
   } else {
     main();

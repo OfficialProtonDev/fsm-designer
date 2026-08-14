@@ -34,14 +34,33 @@ claude mcp add fsm-designer -- node /absolute/path/to/FSM-Designer/mcp/src/index
 
 ## Working with a user's own diagram
 
-Call `open_designer`. It serves the editor at `http://localhost:4319/` and
-keeps it in sync: what the user draws is readable with `get_machine`, and
-`set_machine` updates what they see, within about a second.
+Call `open_designer`. It hands back two URLs, and either one syncs: what the
+user draws becomes readable with `get_machine`, and `set_machine` updates what
+they see, within about a second.
 
-It has to be *that* URL rather than the published site. A page on `https://…`
-cannot call `http://localhost` — browsers block mixed content — so the editor
-is served from the same origin as the sync endpoint. The published copy is
-untouched by any of this and never loads the sync client.
+**A designer tab opened any other way is invisible to these tools.** There is
+no screen reading and no tab inspection — the page has to talk to the server,
+and only these two do. An ordinary visit to the published site, a `file://`
+path or another static server will look to `get_machine` exactly like an empty
+canvas, which is why it now says which of the two it is.
+
+`http://localhost:4319/` is the reliable URL. Same origin, nothing for a
+browser to object to.
+
+The linked URL is the published site pointed at the local server, with the port
+and a session token in the fragment — a fragment because browsers never send
+one to the server the page came from, keeping the token out of GitHub's logs
+and any referrer header. The client stores it in `sessionStorage` and wipes it
+from the address bar. The token is minted per server run, so a link handed out
+before a restart stops working.
+
+Whether that second URL connects is up to the browser. `http://localhost` is a
+trustworthy origin, so mixed content is not the obstacle it appears to be, but
+Private Network Access rules govern a public page reaching a local server and
+have been tightening; the preflight answers what they currently ask for. If a
+browser refuses anyway the page says so instead of sitting there looking empty,
+and the local URL is the way through. Set `FSM_DESIGNER_PUBLIC_URL` if the site
+is deployed somewhere other than the default GitHub Pages address.
 
 Sync is last-write-wins. A diagram is one person's working document, and
 merging two drawings has no sensible answer.

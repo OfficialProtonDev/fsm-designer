@@ -3,6 +3,8 @@
 /* Self-check: node mcp/test/run.js */
 
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const M = require('../src/machine');
 const { analyze } = require('../src/analyze');
 const { simulate, testStrings } = require('../src/simulate');
@@ -524,6 +526,82 @@ function call(method, params) {
   const res = await call('resources/read', { uri: 'fsm://current' });
   test('the current diagram is exposed as a resource', () => {
     assert.ok(res.result.contents[0].text.includes('machine'));
+  });
+
+  /* --- the bridge, over real HTTP --- */
+
+  console.log('bridge');
+
+  const bridge = require('../src/bridge');
+  const started = await bridge.start(0);          // 0: let the OS pick a free port
+  const origin = `http://127.0.0.1:${started.port}`;
+  const token = started.token;
+
+  const hello = await fetch(`${origin}/api/hello`);
+  test('the reachability probe needs no token', () => {
+    assert.strictEqual(hello.status, 200);
+  });
+
+  const bare = await fetch(`${origin}/api/machine`);
+  test('the document is refused without a token', () => {
+    assert.strictEqual(bare.status, 403);
+  });
+
+  const wrong = await fetch(`${origin}/api/machine`, { headers: { Authorization: 'Bearer nope' } });
+  test('a wrong token is refused', () => {
+    assert.strictEqual(wrong.status, 403);
+  });
+
+  const withHeader = await fetch(`${origin}/api/machine`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  test('a bearer token is accepted', () => {
+    assert.strictEqual(withHeader.status, 200);
+  });
+
+  const withQuery = await fetch(`${origin}/api/machine?token=${token}`);
+  test('a token in the query string is accepted, for curl', () => {
+    assert.strictEqual(withQuery.status, 200);
+  });
+
+  const preflight = await fetch(`${origin}/api/machine`, { method: 'OPTIONS' });
+  test('the preflight allows Authorization and answers Private Network Access', () => {
+    assert.match(preflight.headers.get('access-control-allow-headers') || '', /Authorization/i);
+    assert.strictEqual(preflight.headers.get('access-control-allow-private-network'), 'true');
+    assert.ok(Number(preflight.headers.get('access-control-max-age')) > 0);
+  });
+
+  const page = await (await fetch(`${origin}/`)).text();
+  test('the page gets the token before the script that reads it', () => {
+    const global = page.indexOf('window.__fsmBridge');
+    const script = page.indexOf('bridge-client.js');
+    assert.ok(global > -1 && script > -1, 'both should be present');
+    assert.ok(global < script, 'the token must be defined first');
+    assert.ok(page.includes(token));
+  });
+
+  test('the client is not injected twice', () => {
+    assert.strictEqual(page.split('src="bridge-client.js"').length - 1, 1);
+  });
+
+  // The linked URL only works if the client can parse what the server writes.
+  // Lift the pattern straight out of the client so the two cannot drift apart.
+  test('the linked URL parses with the client\'s own pattern', () => {
+    const client = fs.readFileSync(path.join(__dirname, '..', '..', 'bridge-client.js'), 'utf8');
+    const found = /(\/\[#&\]bridge=.*?\/i)\.exec\(window\.location\.hash/.exec(client);
+    assert.ok(found, 'could not find the fragment pattern in bridge-client.js');
+
+    const pattern = eval(found[1]);               // a regex literal from our own source
+    const match = pattern.exec(new URL(bridge.status().linkedUrl).hash);
+    assert.ok(match, 'the client would not parse the link the server hands out');
+    assert.strictEqual(match[1], String(started.port));
+    assert.strictEqual(match[2], token);
+  });
+
+  bridge.stop();
+  test('stopping retires the token', () => {
+    assert.strictEqual(bridge.status().token, null);
+    assert.strictEqual(bridge.status().linkedUrl, null);
   });
 
   console.log(`\n${passed} passed, ${failed} failed`);
