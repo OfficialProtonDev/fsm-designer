@@ -271,7 +271,8 @@ function normalize(input) {
       label: t.label != null ? t.label : symbolsToLabel(symbols, epsilon),
       parallelPart: t.parallelPart,
       perpendicularPart: t.perpendicularPart,
-      anchorAngle: t.anchorAngle
+      anchorAngle: t.anchorAngle,
+      labelOffset: t.labelOffset
     });
   });
 

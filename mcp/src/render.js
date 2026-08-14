@@ -299,7 +299,14 @@ function linkGeometry(from, to, t) {
     endAngle = to1 + (delta > 0 ? Math.PI / 2 : -Math.PI / 2);
     textAngle = a0 + delta * (t0 + t1) / 2;
   }
-  return { d, start, end, mid, endAngle, textAngle, at, t0, t1 };
+  return {
+    d, start, end, mid, endAngle, textAngle, at, t0, t1,
+    sample: n => {
+      const pts = [];
+      for (let i = 0; i <= n; i++) pts.push(at(t0 + (t1 - t0) * (i / n)));
+      return pts;
+    }
+  };
 }
 
 function drawLink(parts, bounds, from, to, t, label, colour, width) {
@@ -360,7 +367,12 @@ function selfLoopGeometry(shape, t) {
     tip: at(a1),
     endAngle: a1 + Math.PI / 2,
     mid: { x: cx + radius * Math.cos(midAngle), y: cy + radius * Math.sin(midAngle) },
-    textAngle: midAngle
+    textAngle: midAngle,
+    sample: n => {
+      const pts = [];
+      for (let i = 0; i <= n; i++) pts.push(at(a0 + (a1 - a0) * (i / n)));
+      return pts;
+    }
   };
 }
 
@@ -494,23 +506,54 @@ function labelBoxes(machine) {
     });
   }
 
-  for (const t of m.transitions) {
+  // `index` identifies the transition back in the caller's own machine.
+  // normalize() rebuilds transition objects, so the object here is a copy and
+  // comparing it by identity against the caller's would silently never match.
+  m.transitions.forEach((t, index) => {
     const raw = t.label != null && t.label !== ''
       ? t.label : M.symbolsToLabel(t.symbols, t.epsilon);
     const g = t.from === t.to
       ? selfLoopGeometry(shapes.get(t.from), t)
       : linkGeometry(shapes.get(t.from), shapes.get(t.to), t);
-    if (!g) continue;
+    if (!g) return;
     const place = labelPlacement(raw, g.mid.x, g.mid.y, g.textAngle, t.labelOffset);
     boxes.push({
-      kind: 'label', transition: t,
+      kind: 'label', transition: t, index,
       x: place.x, y: place.y,
       width: Math.max(place.width, 6) + 4,
       height: place.height + 2,
       empty: !raw
     });
-  }
+  });
   return boxes;
+}
+
+/*
+ * The polyline each arrow actually traces, with a bounding box. The layout
+ * pass uses these to keep arrows off labels and to find where two of them
+ * cross, again by asking the renderer rather than approximating the curve.
+ */
+function transitionPaths(machine, samples = 20) {
+  const m = M.normalize(machine);
+  const shapes = new Map(m.states.map(s => [s.id, nodeShape(s)]));
+  const out = [];
+
+  m.transitions.forEach((t, index) => {
+    const g = t.from === t.to
+      ? selfLoopGeometry(shapes.get(t.from), t)
+      : linkGeometry(shapes.get(t.from), shapes.get(t.to), t);
+    if (!g) return;
+    const points = g.sample(samples);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of points) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    out.push({ transition: t, index, points, box: { minX, minY, maxX, maxY } });
+  });
+  return out;
 }
 
 function overlap(a, b) {
@@ -521,5 +564,6 @@ function overlap(a, b) {
 
 module.exports = {
   render, labelWidth, labelSegments, halfWidthFor, labelBoxes, overlap,
-  linkGeometry, selfLoopGeometry, nodeShape, labelPlacement, NODE_RADIUS
+  linkGeometry, selfLoopGeometry, nodeShape, labelPlacement, transitionPaths,
+  NODE_RADIUS
 };

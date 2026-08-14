@@ -291,6 +291,73 @@ test('laid-out machines have no overlapping labels or states', () => {
     assert.strictEqual(collisions(m), 0, `overlaps in ${m.name}`);
   }
 });
+test('no arrow is drawn through a label', () => {
+  const L = require('../src/layout');
+  const cases = [endsIn01, convert(endsIn01, 'nfa_to_dfa').machine, endsIn01Dfa, {
+    states: [{ name: 'a', start: true }, { name: 'b' }, { name: 'c' }, { name: 'd', accepting: true }],
+    transitions: [
+      { from: 'a', to: 'b', on: '0' }, { from: 'b', to: 'a', on: '1' },
+      { from: 'b', to: 'c', on: '0' }, { from: 'c', to: 'b', on: '1' },
+      { from: 'c', to: 'd', on: '0' }, { from: 'a', to: 'd', on: '1' },
+      { from: 'd', to: 'b', on: '0' }
+    ]
+  }];
+  for (const c of cases) {
+    const m = layout(M.normalize(c));
+    const paths = R.transitionPaths(m);
+    const labels = R.labelBoxes(m).filter(b => b.kind === 'label' && !b.empty);
+    for (const label of labels) {
+      for (const p of paths) {
+        if (p.transition === label.transition) continue;
+        assert.ok(!L.pathCrossesBox(p, label),
+          `an arrow runs through the label "${label.transition.label}" in ${m.name}`);
+      }
+    }
+  }
+});
+test('arrows do not cross close to a state', () => {
+  const L = require('../src/layout');
+  const cases = [endsIn01, convert(endsIn01, 'nfa_to_dfa').machine, endsIn01Dfa, {
+    states: [{ name: 'a', start: true }, { name: 'b' }, { name: 'c' }, { name: 'd', accepting: true }],
+    transitions: [
+      { from: 'a', to: 'c', on: '0' }, { from: 'b', to: 'd', on: '1' },
+      { from: 'a', to: 'd', on: '1' }, { from: 'b', to: 'c', on: '0' },
+      { from: 'c', to: 'a', on: '1' }
+    ]
+  }];
+  for (const c of cases) {
+    const m = layout(M.normalize(c));
+    const bad = L.crossingsNearStates(m);
+    assert.strictEqual(bad.length, 0,
+      `${bad.length} crossing(s) near a state in ${m.name}` +
+      (bad[0] ? ` (${Math.round(bad[0].distance)}px away)` : ""));
+  }
+});
+test('untangling actually moves something when it must', () => {
+  const L = require('../src/layout');
+  // Force a tangle, then confirm the pass finds and removes it.
+  const m = layout(M.normalize({
+    states: [{ name: 'a', start: true }, { name: 'b' }, { name: 'c' }, { name: 'd', accepting: true }],
+    transitions: [
+      { from: 'a', to: 'd', on: '0' }, { from: 'b', to: 'c', on: '1' },
+      { from: 'a', to: 'c', on: '1' }, { from: 'b', to: 'd', on: '0' }
+    ]
+  }));
+  assert.strictEqual(L.crossingsNearStates(m).length, 0);
+  // and the fix did not push an arrow through a state instead
+  const paths = R.transitionPaths(m);
+  for (const p of paths) {
+    for (const s of m.states) {
+      if (s.id === p.transition.from || s.id === p.transition.to) continue;
+      const half = R.halfWidthFor(s.label != null ? s.label : s.name);
+      for (const pt of p.points) {
+        const cx = Math.max(s.x - half, Math.min(s.x + half, pt.x));
+        assert.ok(Math.hypot(pt.x - cx, pt.y - s.y) >= R.NODE_RADIUS,
+          'untangling pushed an arrow through a state');
+      }
+    }
+  }
+});
 test('wide states get columns wide enough not to touch', () => {
   const m = layout(M.normalize({
     states: [{ name: 'AVeryLongStateName', start: true }, { name: 'AnotherLongOne', accepting: true }],
