@@ -157,9 +157,9 @@ function serveFile(res, rel) {
     // exactly like the remote one, leaving a single path to get wrong.
     if (rel === 'index.html') {
       body = Buffer.from(buf.toString('utf8').replace(
-        '<script src="bridge-client.js"></script>',
+        '<script src="bridge-client.js?v=2"></script>',
         `<script>window.__fsmBridge={token:"${ensureToken()}"};</script>\n` +
-        '<script src="bridge-client.js"></script>'), 'utf8');
+        '<script src="bridge-client.js?v=2"></script>'), 'utf8');
     }
     res.writeHead(200, {
       'Content-Type': TYPES[path.extname(rel)] || 'application/octet-stream',

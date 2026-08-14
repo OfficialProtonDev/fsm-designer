@@ -582,7 +582,8 @@ function call(method, params) {
   });
 
   test('the client is not injected twice', () => {
-    assert.strictEqual(page.split('src="bridge-client.js"').length - 1, 1);
+    // Tolerates the ?v= cache-busting suffix, which changes on releases.
+    assert.strictEqual((page.match(/src="bridge-client\.js[^"]*"/g) || []).length, 1);
   });
 
   // The linked URL only works if the client can parse what the server writes.
