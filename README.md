@@ -65,9 +65,31 @@ python -m http.server 8000
 
 Then open <http://localhost:8000>.
 
+## Using it with Claude
+
+[`mcp/`](mcp/) is an MCP server that lets Claude work with these machines
+directly — read the diagram you are drawing, tell you what is wrong with it,
+convert it, and animate the working. It has no dependencies.
+
+```bash
+claude mcp add fsm-designer -- node "$PWD/mcp/src/index.js"
+```
+
+Ask Claude to open the designer and it serves this editor at
+`http://localhost:4319/`, synced both ways: what you draw it can read, and
+what it fixes appears in your editor. It can check your machine against a
+description, hand back the shortest string that proves two machines differ,
+and produce a self-contained animation of a subset construction or of a string
+being read. See [mcp/README.md](mcp/README.md).
+
+The published site is unaffected and never loads any of it.
+
 ## Layout
 
 - `index.html` — page shell, toolbar, help text
 - `style.css` — styling
 - `fsm.js` — the whole editor: geometry, interaction, and the PNG/SVG/TikZ
   exporters, which all share one canvas-like drawing interface
+- `bridge-client.js` — syncs with the MCP server; only loaded when that
+  server is serving the page
+- `mcp/` — the MCP server

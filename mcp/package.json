@@ -1,0 +1,17 @@
+{
+  "name": "fsm-designer-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for the FSM Designer: read and edit a user's finite state machine, analyse it, convert it, and animate the working.",
+  "license": "MIT",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "bin": { "fsm-designer-mcp": "src/index.js" },
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/index.js",
+    "serve": "node src/index.js --serve",
+    "test": "node test/run.js"
+  },
+  "dependencies": {},
+  "keywords": ["mcp", "fsm", "automata", "dfa", "nfa", "model-context-protocol"]
+}

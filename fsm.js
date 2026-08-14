@@ -1013,46 +1013,68 @@ function fitToContent() {
  * Persistence
  * ------------------------------------------------------------------ */
 
-function saveState() {
-  if (!window.localStorage) return;
-  try {
-    var data = { nodes: [], links: [], view: view };
-    for (var i = 0; i < nodes.length; i++) {
-      var n = nodes[i];
-      data.nodes.push({ x: n.x, y: n.y, text: n.text, isAcceptState: n.isAcceptState });
+/*
+ * The document: the whole diagram as plain data. Saving, and the optional
+ * bridge to a local tool, both want exactly this, so it is built in one place.
+ */
+function serializeDoc(includeView) {
+  var data = { nodes: [], links: [] };
+  if (includeView) data.view = view;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    data.nodes.push({ x: n.x, y: n.y, text: n.text, isAcceptState: n.isAcceptState });
+  }
+  for (var j = 0; j < links.length; j++) {
+    var l = links[j];
+    if (l instanceof Link) {
+      data.links.push({
+        type: 'Link', nodeA: nodes.indexOf(l.nodeA), nodeB: nodes.indexOf(l.nodeB),
+        text: l.text, parallelPart: l.parallelPart, perpendicularPart: l.perpendicularPart
+      });
+    } else if (l instanceof SelfLink) {
+      data.links.push({
+        type: 'SelfLink', node: nodes.indexOf(l.node),
+        text: l.text, anchorAngle: l.anchorAngle
+      });
+    } else if (l instanceof StartLink) {
+      data.links.push({
+        type: 'StartLink', node: nodes.indexOf(l.node),
+        text: l.text, deltaX: l.deltaX, deltaY: l.deltaY
+      });
     }
-    for (var j = 0; j < links.length; j++) {
-      var l = links[j];
-      if (l instanceof Link) {
-        data.links.push({
-          type: 'Link', nodeA: nodes.indexOf(l.nodeA), nodeB: nodes.indexOf(l.nodeB),
-          text: l.text, parallelPart: l.parallelPart, perpendicularPart: l.perpendicularPart
-        });
-      } else if (l instanceof SelfLink) {
-        data.links.push({
-          type: 'SelfLink', node: nodes.indexOf(l.node),
-          text: l.text, anchorAngle: l.anchorAngle
-        });
-      } else if (l instanceof StartLink) {
-        data.links.push({
-          type: 'StartLink', node: nodes.indexOf(l.node),
-          text: l.text, deltaX: l.deltaX, deltaY: l.deltaY
-        });
-      }
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  } catch (e) { /* storage unavailable or full: not fatal */ }
+  }
+  return data;
 }
 
-function restoreState() {
-  if (!window.localStorage) return;
-  var raw;
-  try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { return; }
-  if (!raw) return;
-  var data;
-  try { data = JSON.parse(raw); } catch (e) { return; }
-  if (!data || !data.nodes) return;
+function saveState() {
+  try {
+    if (window.localStorage) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeDoc(true)));
+    }
+  } catch (e) { /* storage unavailable or full: not fatal */ }
+  // Every edit funnels through here, which makes it the one place a bridge
+  // needs to listen for the diagram having changed.
+  if (window.fsmDesigner && typeof window.fsmDesigner.onChange === 'function') {
+    try { window.fsmDesigner.onChange(); } catch (e) { /* never break editing */ }
+  }
+}
 
+// Replaces the whole diagram with `data`. Returns false if it is not a
+// document, so a caller can tell "empty" from "not mine".
+function loadDoc(data, keepView) {
+  if (!data || !Array.isArray(data.nodes)) return false;
+  nodes = [];
+  links = [];
+  focusObject(null);
+  selection = [];
+  currentLink = null;
+  rubberBand = null;
+  deserializeInto(data, keepView);
+  draw();
+  return true;
+}
+
+function deserializeInto(data, keepView) {
   var i;
   for (i = 0; i < data.nodes.length; i++) {
     var d = data.nodes[i];
@@ -1078,12 +1100,39 @@ function restoreState() {
     }
     if (link) { link.text = e.text || ''; links.push(link); }
   }
-  if (data.view && typeof data.view.scale === 'number') {
+  if (!keepView && data.view && typeof data.view.scale === 'number') {
     view.x = data.view.x;
     view.y = data.view.y;
     view.scale = data.view.scale;
+    updateZoomLabel();
   }
 }
+
+function restoreState() {
+  if (!window.localStorage) return;
+  var raw;
+  try { raw = localStorage.getItem(STORAGE_KEY); } catch (e) { return; }
+  if (!raw) return;
+  var data;
+  try { data = JSON.parse(raw); } catch (e) { return; }
+  if (!data || !data.nodes) return;
+  deserializeInto(data, false);
+}
+
+/*
+ * The seam an outside tool works through. Everything else on this page stays
+ * private; a bridge script only ever reads or replaces the whole document.
+ */
+window.fsmDesigner = {
+  getDoc: function () { return serializeDoc(true); },
+  setDoc: function (doc, keepView) {
+    var ok = loadDoc(doc, keepView !== false);
+    if (ok) { fitToContent(); saveState(); }
+    return ok;
+  },
+  isEmpty: function () { return nodes.length === 0 && links.length === 0; },
+  onChange: null    // assigned by the bridge client, called after every edit
+};
 
 /* ------------------------------------------------------------------ *
  * Exporters -- all share the ctx-like API used by drawDiagram
